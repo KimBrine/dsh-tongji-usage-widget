@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>同济 AI 登录助手</title>
+<link rel="stylesheet" href="popup.css">
+<body>
+  <header><span aria-hidden="true">◈</span><div><h1>同济 AI 登录助手</h1><p>为积分浮窗自动更新登录</p></div></header>
+  <section class="status-box" aria-live="polite"><strong id="state">正在检查连接…</strong><p id="details"></p><p id="expiry"></p></section>
+  <form id="pair-form">
+    <label>本机端口<input id="port" type="number" min="1024" max="65535" value="17945" required></label>
+    <label>浮窗显示的 8 位配对码<input id="code" inputmode="numeric" autocomplete="off" pattern="[0-9]{8}" maxlength="8" placeholder="输入配对码" required></label>
+    <button type="submit" class="primary" id="pair">连接助手</button>
+  </form>
+  <section class="actions"><button id="renew" disabled>立即更新登录</button><button id="focus" disabled>继续学校登录</button><button id="status">检查连接</button></section>
+  <p id="message" class="message" role="status"></p>
+  <footer>只操作助手创建的同济登录页。学校要求密码或验证码时，请在学校页面自行完成。</footer>
+  <script src="popup.js"></script>
+</body>
+</html>

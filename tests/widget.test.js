@@ -7,6 +7,7 @@ function createEnvironment() {
   const allTargets = [];
   const hosts = new Map();
   const timers = new Map();
+  const clipboardWrites = [];
   let timerId = 0;
   const target = (extra = {}) => {
     const listeners = new Map();
@@ -55,7 +56,7 @@ function createEnvironment() {
     innerWidth: 1200, innerHeight: 800,
     setTimeout(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
-    navigator: { clipboard: { async writeText() {} } },
+    navigator: { clipboard: { async writeText(value) { clipboardWrites.push(value); } } },
   });
   const document = target({
     hidden: false, defaultView: window,
@@ -64,7 +65,7 @@ function createEnvironment() {
     createElement() { return element(); },
   });
   return {
-    document, window, timers,
+    document, window, timers, clipboardWrites,
     element(id) { return hosts.get('tongji-ai-usage-widget')?.shadowRoot.getElementById(id); },
     assertClean() {
       assert.equal(hosts.size, 0, 'dispose removes the widget DOM');
@@ -209,6 +210,148 @@ test('hidden document pauses polling and an in-flight result cannot recreate a d
   assert.equal(count, 2);
   dispose();
   resolvePending(successfulSnapshot());
+  await settle();
+  environment.assertClean();
+});
+
+const autoLoginState = (overrides = {}) => ({
+  state: 'idle', enabled: true, paired: true, connected: true, port: 17945,
+  expiresAt: '2026-11-14T12:00:00Z', lastRenewedAt: '2026-11-13T12:00:00Z',
+  message: '', extensionPath: 'D:\\plugins\\example\\browser-extension', ...overrides,
+});
+const autoSnapshot = (autoLogin, reportOverrides = {}) => ({ ...successfulSnapshot(reportOverrides), autoLogin });
+
+test('automatic login status is available in settings and expiry errors prioritize its guidance', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [{
+    report: null, error: { code: 'AUTH_EXPIRED', message: '旧的手动导入提示。' },
+    autoLogin: autoLoginState({ state: 'opening' }),
+  }]);
+  await settle();
+  assert.match(environment.element('setup-message').textContent, /Chrome 自动更新登录/);
+  assert.match(environment.element('notice').textContent, /Chrome 自动更新登录/);
+  assert.equal(environment.element('manual-setup').hidden, true);
+  assert.equal([...environment.timers.values()][0].delay, 5000);
+  environment.element('setup-auto-settings').dispatch('click');
+  assert.equal(environment.element('settings').hidden, false);
+  assert.equal(environment.element('auto-login-section').hidden, false);
+  environment.element('manual-toggle').dispatch('click');
+  assert.equal(environment.element('manual-setup').hidden, false);
+  dispose();
+  environment.assertClean();
+});
+
+test('waiting for school login explains the user action and keeps fast status polling', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [{
+    report: null, error: { code: 'AUTH_MISSING', message: '未登录。' },
+    autoLogin: autoLoginState({ state: 'waiting_for_login' }),
+  }]);
+  await settle();
+  assert.match(environment.element('setup-message').textContent, /在 Chrome 完成学校登录/);
+  assert.equal([...environment.timers.values()][0].delay, 5000);
+  dispose();
+  environment.assertClean();
+});
+
+test('offline Chrome assistant guidance does not tell the user to copy a website token', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [{
+    report: null, error: { code: 'AUTH_EXPIRED', message: '请手动导入 access_token。' },
+    autoLogin: autoLoginState({ state: 'offline', connected: false }),
+  }]);
+  await settle();
+  assert.match(environment.element('notice').textContent, /助手离线，请打开 Chrome/);
+  assert.ok(!environment.element('setup-message').textContent.includes('access_token'));
+  assert.equal([...environment.timers.values()][0].delay, 60000);
+  dispose();
+  environment.assertClean();
+});
+
+test('pairing displays and copies a leading-zero connection code without replacing the report', async () => {
+  const environment = createEnvironment();
+  const unpaired = autoLoginState({ state: 'unpaired', paired: false, connected: false });
+  const { dispose, calls } = mountWithQueue(environment, [autoSnapshot(unpaired), {
+    autoLogin: unpaired, pairCode: '01234567', pairExpiresAt: new Date(Date.now() + 300000).toISOString(),
+  }]);
+  await settle();
+  environment.element('auto-pair').dispatch('click');
+  await settle();
+  assert.deepEqual(calls.map(({ action }) => action), ['status', 'auto-login']);
+  assert.deepEqual(calls[1].payload, { action: 'pair' });
+  assert.equal(environment.element('pairing').hidden, false);
+  assert.equal(environment.element('pair-code').textContent, '01234567');
+  assert.equal(environment.element('balance').textContent, '123');
+  environment.element('copy-pair-code').dispatch('click');
+  environment.element('copy-extension-path').dispatch('click');
+  await settle();
+  assert.deepEqual(environment.clipboardWrites, ['01234567', unpaired.extensionPath]);
+  dispose();
+  environment.assertClean();
+});
+
+test('renewal updates login metadata first and only a normal status response replaces the balance', async () => {
+  const environment = createEnvironment();
+  const calls = [];
+  let completeStatus;
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async (action, payload) => {
+      calls.push({ action, payload });
+      if (calls.length === 1) return autoSnapshot(autoLoginState());
+      if (action === 'auto-login') return { autoLogin: autoLoginState({ state: 'queued' }), report: { points: { planRemaining: 999 } } };
+      return new Promise(resolve => { completeStatus = resolve; });
+    },
+  });
+  await settle();
+  environment.element('auto-renew').dispatch('click');
+  await settle();
+  assert.deepEqual(calls.map(({ action }) => action), ['status', 'auto-login', 'status']);
+  assert.deepEqual(calls[1].payload, { action: 'renew' });
+  assert.equal(environment.element('balance').textContent, '123');
+  completeStatus(autoSnapshot(autoLoginState({ state: 'success' }), { points: { source: 'account', planRemaining: 456 } }));
+  await settle();
+  assert.equal(environment.element('balance').textContent, '456');
+  assert.equal(environment.element('auto-state').textContent, '登录已自动更新。');
+  assert.equal([...environment.timers.values()][0].delay, 60000);
+  dispose();
+  environment.assertClean();
+});
+
+test('enabling and disabling automatic login use the backend actions', async () => {
+  const environment = createEnvironment();
+  const disabled = autoLoginState({ state: 'disabled', enabled: false });
+  const enabled = autoLoginState();
+  const { dispose, calls } = mountWithQueue(environment, [
+    autoSnapshot(disabled), { autoLogin: enabled }, autoSnapshot(enabled),
+    { autoLogin: disabled }, autoSnapshot(disabled),
+  ]);
+  await settle();
+  environment.element('auto-toggle').dispatch('click');
+  await settle();
+  assert.equal(environment.element('auto-toggle').textContent, '停用自动更新');
+  environment.element('auto-toggle').dispatch('click');
+  await settle();
+  assert.deepEqual(calls.filter(({ action }) => action === 'auto-login').map(({ payload }) => payload.action), ['enable', 'disable']);
+  assert.equal(environment.element('auto-toggle').textContent, '启用自动更新');
+  assert.equal(environment.element('auto-renew').disabled, true);
+  dispose();
+  environment.assertClean();
+});
+
+test('disposing while a pairing action is pending prevents its result from adding DOM or timers', async () => {
+  const environment = createEnvironment();
+  let completePair;
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async (action) => action === 'status' ? autoSnapshot(autoLoginState({ state: 'unpaired', paired: false }))
+      : new Promise(resolve => { completePair = resolve; }),
+  });
+  await settle();
+  environment.element('auto-pair').dispatch('click');
+  await settle();
+  dispose();
+  completePair({ autoLogin: autoLoginState(), pairCode: '01234567' });
   await settle();
   environment.assertClean();
 });

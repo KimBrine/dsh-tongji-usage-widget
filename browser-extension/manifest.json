@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "同济 AI 登录助手",
+  "version": "0.2.0",
+  "description": "在同济 AI 积分浮窗请求更新时，使用正常学校登录流程更新本机凭据。",
+  "minimum_chrome_version": "120",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://agi.tongji.edu.cn/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "同济 AI 登录助手", "default_popup": "popup.html" },
+  "content_scripts": [{
+    "matches": ["https://agi.tongji.edu.cn/*"],
+    "js": ["shared.js", "content.js"],
+    "run_at": "document_idle",
+    "all_frames": false
+  }]
+}

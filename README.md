@@ -35,13 +35,32 @@ pwsh -File .\scripts\install.ps1 -Profile web
 
 ## 登录
 
+### 自动更新登录（0.2.0）
+
+连接 Chrome 助手后，DSH 会在令牌到期前 15 分钟请求一次正常的学校重新登录。助手在自己创建的标签页中点击网站原有的统一认证入口，获得新令牌后交给本机后端。后端通过平台 `/auth/me` 验证真实性和账号一致性，再原子替换共享凭据；积分查询随后自动恢复。
+
+一次性设置：
+
+1. 更新代码后，完全退出并重新打开 DSH。
+2. 在 Chrome 打开 `chrome://extensions`，启用开发者模式，点“加载已解压的扩展程序”，选择本项目的 **browser-extension** 文件夹。
+3. 在 DSH 积分浮窗的设置中点“连接 Chrome 助手”，取得 8 位连接码。
+4. 打开 Chrome 工具栏中的“同济 AI 登录助手”，输入连接码并连接。首次连接会自动试运行一次登录更新。
+
+之后无需手动复制令牌。学校登录失效或需要验证时，助手保留它创建的登录页；在助手中点“继续学校登录”完成认证即可。Chrome 和 DSH 需保持运行；助手没有连上时，浮窗会说明原因。也可在浮窗中立即更新或停用。
+
+助手使用 `storage` 保存本机配对信息、`alarms` 定时检查任务；网站访问权限仅覆盖 `https://agi.tongji.edu.cn/*` 和本机 `http://127.0.0.1/*`，不申请 Cookie、历史、debugger 或全部标签页读取权限。只有与一次更新任务关联、由助手创建的同济 AI 标签页会读取令牌；普通浏览标签不会读取。扩展仅保存本机连接密钥，不保存网站令牌。连接密钥与网站凭据在后端分别保存为当前用户受限文件，禁止上传。
+
+这是通过平台正常重新登录取得新令牌，不能延长旧 JWT 或保证永久登录。完整自动流程的实机验收结果见 [VALIDATION.md](VALIDATION.md)。Chrome 助手说明见 [browser-extension/README.md](browser-extension/README.md)。
+
+### 手动导入（备用）
+
 默认读取本机凭据；使用过早期 Qoder 版的用户可复用同一份文件：
 
 ```text
 %USERPROFILE%\.config\tongji-ai-usage\credentials.json
 ```
 
-已保存有效令牌时无需重新绑定。过期或未配置时，浮窗显示导入命令，在本机交互式终端执行：
+已保存有效令牌时无需重新绑定。过期或未配置时，可在浮窗展开备用的手动导入说明，在本机交互式终端执行：
 
 ```powershell
 node scripts/auth.mjs set-token
@@ -57,7 +76,7 @@ copy(sessionStorage.getItem('access_token'))
 
 `node scripts/auth.mjs status` 只显示是否已配置；`clear` 删除共享凭据，**也会影响 Qoder 插件**。环境变量 `TONGJI_AI_ACCESS_TOKEN`、`TONGJI_AI_COOKIE` 优先于文件；DSH 进程需继承该变量。Cookie 是兼容后备，不保证平台接受。
 
-后端只向 `https://agi.tongji.edu.cn` 发起 GET 请求，禁止重定向。令牌不发给浮窗，不写入项目目录、浏览器存储或日志。Windows 导入时限制凭据文件 ACL；其他系统使用 0600 权限。
+后端只向 `https://agi.tongji.edu.cn` 发起 GET 请求，禁止重定向。令牌不发给浮窗，不写入项目目录或日志；插件不额外写入浏览器或扩展存储，平台自身仍使用 sessionStorage 保存登录态。Windows 导入时限制凭据文件 ACL；其他系统使用 0600 权限。
 
 ## 操作与口径
 
@@ -66,7 +85,7 @@ copy(sessionStorage.getItem('access_token'))
 - 明细可选今日、昨日、近 7 天，显示账户积分、周期已用/总额、实际 Token、调用次数和分模型用量。
 - 默认每 60 秒刷新，可手动刷新；隐藏页面暂停轮询。宿主共享缓存与并发请求，避免多个窗口重复查询。监控不调用模型，不消耗模型 Token。
 - 低积分阈值默认 100；每日积分预算默认关闭。设置填 0 可关闭对应提醒。提醒在卡片或胶囊内显示，不发送系统通知。
-- 网络失败时保留最后成功值并标“更新失败”；登录失效时清除旧值、提示重新导入；部分统计缺失显示未知，不补成零。
+- 网络失败时保留最后成功值并标“更新失败”；登录失效时清除旧值，已连接助手时请求自动更新；部分统计缺失显示未知，不补成零。
 
 所有统计是**同济平台账户范围**，包含 Qoder、DSH 和其他客户端的使用。这里不按 DSH 单轮会话估算扣费。今日/昨日/近 7 天不等同于套餐重置周期。
 
@@ -89,11 +108,12 @@ npm run preview
 ```powershell
 node scripts/preview.mjs --demo
 node scripts/preview.mjs --port 17942
+node scripts/preview.mjs --with-login --port 17942
 ```
 
-`--demo` 使用明确标注的模拟数据，不代表真实账户。不含任何凭据的安装包可用 `npm pack` 生成。
+`--demo` 使用明确标注的模拟数据，不代表真实账户。`--with-login` 为独立预览启动本机登录桥接服务，不应与同一台电脑上已启用自动登录的 DSH 重复运行。不含任何凭据的安装包可用 `npm pack` 生成。
 
-接入核对基于本机 DSH `0.1.7-rc.2`、官方桌面 `0.2.2-rc.1`。自动测试覆盖接口口径、异常、凭据变化、缓存竞态、HTTP 边界与双端注入。独立预览和运行时 smoke 不能替代安装后的真实 DSH 桌面窗口验收；当前环境尚未在桌面会话完成安装。
+接入核对基于本机 DSH `0.1.7-rc.2`、官方桌面 `0.2.2-rc.1`。自动测试覆盖接口口径、异常、凭据变化、缓存竞态、HTTP 边界与双端注入。本机 desktop profile 已配置本地 link bundle；0.2.0 自动登录的完整实机验收进度见 [VALIDATION.md](VALIDATION.md)。
 
 ## 文件与来源
 

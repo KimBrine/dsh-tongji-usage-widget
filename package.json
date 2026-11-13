@@ -1,17 +1,18 @@
 {
   "name": "dsh-tongji-usage-widget",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "同济 AI 平台积分监控浮窗，适配 DeepSeek Harness Web 与官方桌面端",
   "type": "module",
   "main": "lib/index.js",
   "engines": { "node": ">=20" },
-  "files": ["lib/", "scripts/", "tests/", "cordis.patch.yml", "README.md", "INSTALL.md", "VALIDATION.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "files": ["lib/", "scripts/", "browser-extension/", "tests/", "cordis.patch.yml", "README.md", "INSTALL.md", "VALIDATION.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "scripts": {
     "test": "node --test tests/*.test.js",
     "preview": "node scripts/preview.mjs",
     "usage": "node scripts/usage.mjs",
-    "auth": "node scripts/auth.mjs"
+    "auth": "node scripts/auth.mjs",
+    "login-bridge": "node scripts/auto-login.mjs serve"
   },
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/KimBrine/dsh-tongji-usage-widget.git" },

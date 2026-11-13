@@ -51,3 +51,21 @@ test('desktop injection registers synchronously and loader failure is harmless',
   assert.doesNotThrow(() => added[0].onerror());
   assert.doesNotThrow(() => new vm.Script(browserScript()));
 });
+test('automatic-login actions require the DSH operator guard and a bounded valid POST', async () => {
+  const routes = new Map(); let calls = 0, deny = true;
+  const ctx = { webServer: { register(route) { routes.set(route.path, route); return () => routes.delete(route.path); } },
+    connection: { requestRejection() { return deny ? 401 : undefined; } } };
+  const cleanup = registerRoutes(ctx, { status: async () => ({}), dispose() {} }, { action: async action => { calls++; return { action, pairCode: '12345678' }; } });
+  const server = createServer((req, res) => { const route = routes.get(new URL(req.url, 'http://local').pathname); if (route) route.handler(req, res); else { res.writeHead(404); res.end(); } });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}${BASE_PATH}/auto-login`;
+  const post = body => fetch(url, { method: 'POST', headers: { 'X-Tongji-Widget': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await post({ action: 'pair' })).status, 403); assert.equal(calls, 0);
+    deny = false;
+    assert.equal((await post({ action: 'unsupported' })).status, 400);
+    assert.equal((await post({ action: 'pair', extra: 'x'.repeat(3000) })).status, 400);
+    const response = await post({ action: 'pair' }); assert.equal(response.status, 200);
+    assert.equal((await response.json()).pairCode, '12345678'); assert.equal(calls, 1);
+  } finally { cleanup(); await new Promise(resolve => server.close(resolve)); }
+});

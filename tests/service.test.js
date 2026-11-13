@@ -78,3 +78,15 @@ test('credential replacement clears cached account and deletion stops pending wr
   revision = null; release();
   assert.equal((await pending).report, null);
 });
+test('expired login requests automatic renewal and new credentials bypass the old auth-error cache', async () => {
+  let revision = 'old', attempts = 0, state = 'idle';
+  const autoLogin = { check: async () => {}, status: async () => ({ state }), requestRenew: async () => { attempts++; state = 'opening'; } };
+  const service = createUsageService({ autoLogin, credentialStatus: configured, credentialRevision: async () => revision,
+    query: async () => { if (revision === 'old') throw Object.assign(new Error('secret'), { code: 'AUTH_EXPIRED' }); return { points: { planRemaining: 15 } }; } });
+  const expired = await service.status();
+  assert.equal(attempts, 1); assert.equal(expired.autoLogin.state, 'opening'); assert.equal(expired.report, null);
+  revision = 'new'; state = 'success';
+  const renewed = await service.status();
+  assert.equal(renewed.error, null); assert.equal(renewed.report.points.planRemaining, 15);
+  assert.equal(renewed.autoLogin.state, 'success'); service.dispose();
+});
