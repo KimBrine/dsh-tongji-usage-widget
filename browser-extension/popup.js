@@ -7,16 +7,18 @@
     BRIDGE_UNAUTHORIZED: '本机连接已失效，请重新配对。', NOT_PAIRED: '请先连接浮窗中的配对码。',
     NO_LOGIN_TAB: '当前没有需要继续的登录页，可点击立即更新登录。', ACCOUNT_MISMATCH: '学校页面登录的账号与插件原账号不同，已保留原凭据。',
     JOB_EXPIRED: '本次更新已过期，请重新点击立即更新。', INVALID_TOKEN: '平台尚未返回新的有效登录凭据。',
-    LOGIN_REQUIRED: '请点击继续学校登录，在学校页面完成认证。', BROWSER_ERROR: '未完成，请检查 Chrome 或稍后重试。', BUSY: '正在更新，请稍候。',
+    LOGIN_REQUIRED: '请点击继续学校登录，在学校页面完成认证。', BROWSER_ERROR: '未完成，请检查当前浏览器或稍后重试。', BUSY: '正在更新，请稍候。',
   };
-  const states = { idle: '已连接，等待更新', connected: '已连接', ready: '已连接', opening: '正在打开学校登录', renewing: '正在自动更新登录', queued: '等待 Chrome 更新', waiting_for_login: '需要完成学校登录', login_required: '需要完成学校登录', renewed: '登录已自动更新', success: '登录已自动更新', disabled: '自动更新已关闭', error: '登录尚未更新' };
+  const states = { idle: '已连接，等待更新', connected: '已连接', ready: '已连接', opening: '正在打开学校登录', renewing: '正在自动更新登录', queued: '等待浏览器更新', waiting_for_login: '需要完成学校登录', login_required: '需要完成学校登录', renewed: '登录已自动更新', success: '登录已自动更新', disabled: '自动更新已关闭', error: '登录尚未更新' };
   const dateText = value => { const date = value ? new Date(typeof value === 'number' && value < 1e12 ? value * 1000 : value) : null; return date && Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : ''; };
   function render(status) {
+    const browserName = status.browser === 'edge' ? 'Edge' : 'Chrome';
+    byId('browser').textContent = `当前浏览器：${browserName}`;
     byId('port').value = String(status.port || 17945);
     byId('renew').disabled = !status.paired || !status.connected;
     byId('focus').disabled = !status.hasOwnedTab;
     byId('state').textContent = !status.paired ? '尚未配对' : !status.connected ? '本机插件未连接' : states[status.state] || '已连接';
-    byId('details').textContent = !status.paired ? '先在 DSH 浮窗中生成配对码。' : !status.connected ? errors[status.code] || errors.BRIDGE_OFFLINE : '登录临近到期时，插件会请求 Chrome 自动更新。';
+    byId('details').textContent = !status.paired ? '先在 DSH 浮窗中生成配对码。' : !status.connected ? errors[status.code] || errors.BRIDGE_OFFLINE : `登录临近到期时，插件会请求 ${browserName} 自动更新。`;
     const expiresAt = dateText(status.expiresAt), renewedAt = dateText(status.lastRenewedAt);
     byId('expiry').textContent = [expiresAt ? `当前到期：${expiresAt}` : '', renewedAt ? `上次更新：${renewedAt}` : ''].filter(Boolean).join('；');
   }

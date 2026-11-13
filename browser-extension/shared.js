@@ -2,6 +2,18 @@
   'use strict';
   const SITE_ORIGIN = 'https://agi.tongji.edu.cn';
   const DEFAULT_PORT = 17945;
+  // Chromium Edge exposes the same chrome.* extension APIs and URL scheme as Chrome.
+  // This limited hint affects pairing/display only; it is not a trusted identity.
+  function detectBrowser(navigatorLike = scope.navigator) {
+    try {
+      const brands = navigatorLike?.userAgentData?.brands;
+      if (Array.isArray(brands) && brands.some(item => item?.brand === 'Microsoft Edge')) return 'edge';
+    } catch { /* Client Hints may be unavailable; fall back to the User-Agent. */ }
+    try {
+      if (typeof navigatorLike?.userAgent === 'string' && /\bEdg\/[0-9]/.test(navigatorLike.userAgent)) return 'edge';
+    } catch { /* Missing browser metadata defaults to Chrome. */ }
+    return 'chrome';
+  }
   function normalizePort(value = DEFAULT_PORT) {
     const port = Number(value);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('INVALID_PORT');
@@ -36,5 +48,5 @@
   function trustedPopupSender(sender, runtime) {
     return sender?.id === runtime.id && !sender.tab && sender.url === runtime.getURL('popup.html');
   }
-  scope.TongjiLoginCore = Object.freeze({ SITE_ORIGIN, DEFAULT_PORT, normalizePort, baseUrl, timestamp, candidateMetadata, trustedContentSender, trustedPopupSender });
+  scope.TongjiLoginCore = Object.freeze({ SITE_ORIGIN, DEFAULT_PORT, detectBrowser, normalizePort, baseUrl, timestamp, candidateMetadata, trustedContentSender, trustedPopupSender });
 })(globalThis);

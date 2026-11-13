@@ -3,6 +3,7 @@ importScripts('shared.js');
 (function () {
   'use strict';
   const core = TongjiLoginCore;
+  const browser = core.detectBrowser();
   const CONFIG_KEY = 'tongjiLoginBridge';
   const JOB_KEY = 'tongjiLoginJob';
   const ALARM = 'tongji-login-bridge-poll';
@@ -94,17 +95,17 @@ importScripts('shared.js');
   async function status() {
     const config = await readConfig();
     const owned = await readJob();
-    if (!config) return { paired: false, port: core.DEFAULT_PORT, connected: false, hasOwnedTab: false };
+    if (!config) return { paired: false, browser, port: core.DEFAULT_PORT, connected: false, hasOwnedTab: false };
     try {
       const response = await request(config, '/v1/status');
       const value = response.autoLogin || response;
       // Explicit allowlist: the popup never receives bridgeKey or a website token.
-      return { paired: true, port: config.port, connected: true, hasOwnedTab: Number.isInteger(owned?.tabId),
+      return { paired: true, browser, port: config.port, connected: true, hasOwnedTab: Number.isInteger(owned?.tabId),
         state: typeof value.state === 'string' ? value.state : typeof value.phase === 'string' ? value.phase : 'connected',
         expiresAt: value.expiresAt ?? value.credentialExpiresAt ?? null,
         lastRenewedAt: value.lastRenewedAt ?? value.lastSuccessAt ?? null };
     } catch (error) {
-      return { paired: true, port: config.port, connected: false, hasOwnedTab: Number.isInteger(owned?.tabId), code: safeCode(error) };
+      return { paired: true, browser, port: config.port, connected: false, hasOwnedTab: Number.isInteger(owned?.tabId), code: safeCode(error) };
     }
   }
   async function popupMessage(message) {
@@ -112,7 +113,7 @@ importScripts('shared.js');
       const port = core.normalizePort(message.port);
       const code = String(message.code || '').trim();
       if (!/^\d{8}$/.test(code)) throw new Error('INVALID_PAIR_CODE');
-      const response = await request({ port }, '/v1/pair', { method: 'POST', body: { code }, anonymous: true });
+      const response = await request({ port }, '/v1/pair', { method: 'POST', body: { code, browser }, anonymous: true });
       if (typeof response.bridgeKey !== 'string' || response.bridgeKey.length < 20) throw new Error('PAIR_REJECTED');
       await chrome.storage.local.set({ [CONFIG_KEY]: { port, bridgeKey: response.bridgeKey } });
       await writeJob(null);

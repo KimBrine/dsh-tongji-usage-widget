@@ -43,7 +43,12 @@ function createEnvironment() {
       const header = element();
       this.shadowRoot = {
         set innerHTML(value) {
-          for (const match of value.matchAll(/id="([^"]+)"/g)) entries.set(match[1], element());
+          for (const match of value.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
+            const node = element();
+            for (const attribute of match[0].matchAll(/([\w-]+)="([^"]*)"/g)) node.setAttribute(attribute[1], attribute[2]);
+            node.textContent = value.slice(match.index + match[0].length).match(/^([^<]*)</)?.[1] || '';
+            entries.set(match[1], node);
+          }
         },
         getElementById(id) { return entries.get(id); },
         querySelector() { return card; },
@@ -215,7 +220,7 @@ test('hidden document pauses polling and an in-flight result cannot recreate a d
 });
 
 const autoLoginState = (overrides = {}) => ({
-  state: 'idle', enabled: true, paired: true, connected: true, port: 17945,
+  state: 'idle', enabled: true, paired: true, connected: true, browser: 'chrome', port: 17945,
   expiresAt: '2026-11-14T12:00:00Z', lastRenewedAt: '2026-11-13T12:00:00Z',
   message: '', extensionPath: 'D:\\plugins\\example\\browser-extension', ...overrides,
 });
@@ -264,6 +269,59 @@ test('offline Chrome assistant guidance does not tell the user to copy a website
   assert.match(environment.element('notice').textContent, /助手离线，请打开 Chrome/);
   assert.ok(!environment.element('setup-message').textContent.includes('access_token'));
   assert.equal([...environment.timers.values()][0].delay, 60000);
+  dispose();
+  environment.assertClean();
+});
+
+test('unpaired guidance is browser neutral and names both Edge and Chrome installation pages', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [{
+    report: null, error: { code: 'AUTH_MISSING', message: '未登录。' },
+    autoLogin: autoLoginState({ state: 'unpaired', browser: null, paired: false, connected: false }),
+  }]);
+  await settle();
+  assert.equal(environment.element('auto-pair').textContent, '连接浏览器助手');
+  assert.match(environment.element('setup-message').textContent, /先连接一次浏览器助手/);
+  assert.ok(!environment.element('setup-message').textContent.includes('Chrome'));
+  assert.match(environment.element('extension-guide').textContent, /Edge 的 edge:\/\/extensions 或 Chrome 的 chrome:\/\/extensions/);
+  dispose();
+  environment.assertClean();
+});
+
+test('Edge renewal, school login and offline states consistently identify the paired browser', async () => {
+  const environment = createEnvironment();
+  const snapshot = overrides => ({ report: null, error: { code: 'AUTH_EXPIRED', message: '已过期。' },
+    autoLogin: autoLoginState({ browser: 'edge', ...overrides }) });
+  const { dispose } = mountWithQueue(environment, [
+    snapshot({ state: 'opening' }), snapshot({ state: 'waiting_for_login' }),
+    snapshot({ state: 'offline', connected: false }), snapshot({ state: 'queued', connected: false }),
+  ]);
+  await settle();
+  assert.match(environment.element('setup-message').textContent, /通过 Edge 自动更新登录/);
+  assert.equal(environment.element('auto-pair').textContent, '重新连接助手');
+  environment.element('refresh').dispatch('click');
+  await settle();
+  assert.match(environment.element('setup-message').textContent, /在 Edge 完成学校登录/);
+  environment.element('refresh').dispatch('click');
+  await settle();
+  assert.match(environment.element('setup-message').textContent, /Edge 助手离线，请打开 Edge；/);
+  environment.element('refresh').dispatch('click');
+  await settle();
+  assert.match(environment.element('setup-message').textContent, /已排队，请打开 Edge；/);
+  assert.ok(!environment.element('setup-message').textContent.includes('Chrome'));
+  dispose();
+  environment.assertClean();
+});
+
+test('a paired browser with unknown identity is not assumed to be Chrome', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [{
+    report: null, error: { code: 'AUTH_EXPIRED', message: '已过期。' },
+    autoLogin: autoLoginState({ state: 'offline', browser: null, connected: false }),
+  }]);
+  await settle();
+  assert.match(environment.element('auto-state').textContent, /已配对浏览器助手离线，请打开已配对浏览器/);
+  assert.ok(!/Chrome|Edge/.test(environment.element('auto-state').textContent));
   dispose();
   environment.assertClean();
 });
@@ -352,6 +410,159 @@ test('disposing while a pairing action is pending prevents its result from addin
   await settle();
   dispose();
   completePair({ autoLogin: autoLoginState(), pairCode: '01234567' });
+  await settle();
+  environment.assertClean();
+});
+
+const updateState = (overrides = {}) => ({
+  state: 'current', currentVersion: '0.2.2', latestVersion: '0.2.2',
+  url: 'https://github.com/KimBrine/dsh-tongji-usage-widget',
+  checkedAt: '2026-11-14T12:00:00Z', error: null, ...overrides,
+});
+
+test('a new version has its own card and capsule markers alongside the low balance warning', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [{
+    ...successfulSnapshot({ points: { source: 'account', planRemaining: 42, totalAvailable: 42 } }),
+    updates: updateState({ state: 'available', latestVersion: '0.3.0', url: 'https://untrusted.example/update' }),
+  }]);
+  await settle();
+  assert.equal(environment.element('update-notice').hidden, false);
+  assert.equal(environment.element('update-notice-text').textContent, '发现新版本 v0.3.0');
+  assert.match(environment.element('notice').textContent, /剩余积分低于 100/);
+  environment.element('collapse').dispatch('click');
+  assert.equal(environment.element('pill').hidden, false);
+  assert.equal(environment.element('pill-update').hidden, false);
+  assert.equal(environment.element('pill-alert').hidden, false);
+  assert.match(environment.element('pill').attributes['aria-label'], /剩余积分低于 100.*发现新版本 v0.3.0/);
+  assert.match(environment.element('pill').title, /发现新版本 v0.3.0/);
+  assert.equal(environment.element('update-link').attributes.href, 'https://github.com/KimBrine/dsh-tongji-usage-widget');
+  assert.equal(environment.element('update-help').attributes.href, 'https://github.com/KimBrine/dsh-tongji-usage-widget#readme');
+  for (const id of ['update-link', 'update-help']) {
+    assert.equal(environment.element(id).attributes.target, '_blank');
+    assert.match(environment.element(id).attributes.rel, /noopener/);
+  }
+  dispose();
+  environment.assertClean();
+});
+
+test('manual update checking coalesces clicks and only changes version metadata', async () => {
+  const environment = createEnvironment();
+  const calls = [];
+  let completeCheck;
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async action => {
+      calls.push(action);
+      if (action === 'status') return { ...autoSnapshot(autoLoginState()), updates: updateState() };
+      return new Promise(resolve => { completeCheck = resolve; });
+    },
+  });
+  await settle();
+  environment.element('settings-toggle').dispatch('click');
+  assert.equal(environment.element('update-current').textContent, '当前版本 v0.2.2');
+  assert.equal(environment.element('update-status').textContent, '已是最新版本');
+  assert.match(environment.element('update-checked-at').textContent, /上次检查：/);
+  environment.element('check-update').dispatch('click');
+  environment.element('check-update').dispatch('click');
+  assert.deepEqual(calls, ['status', 'check-update']);
+  assert.equal(environment.element('check-update').disabled, true);
+  assert.equal(environment.element('update-status').textContent, '正在检查更新…');
+  assert.equal(environment.element('balance').textContent, '123');
+  completeCheck({ updates: updateState({ state: 'available', latestVersion: '0.3.0' }),
+    report: { points: { planRemaining: 999 } }, autoLogin: autoLoginState({ state: 'disabled', enabled: false }) });
+  await settle();
+  assert.equal(environment.element('balance').textContent, '123');
+  assert.equal(environment.element('today-cost').textContent, '2');
+  assert.equal(environment.element('auto-toggle').textContent, '停用自动更新');
+  assert.equal(environment.element('check-update').disabled, false);
+  assert.equal(environment.element('update-notice').hidden, false);
+  assert.equal(environment.timers.size, 1);
+  assert.equal([...environment.timers.values()][0].delay, 60000);
+  dispose();
+  environment.assertClean();
+});
+
+test('a failed update check preserves an available version and shows failure only in settings', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [
+    { ...successfulSnapshot(), updates: updateState({ state: 'available', latestVersion: '0.3.0' }) },
+    { updates: updateState({ state: 'error', latestVersion: null, checkedAt: '2026-11-14T12:01:00Z', error: '无法连接 GitHub，请稍后重试。' }) },
+    { updates: updateState({ state: 'current', checkedAt: '2026-11-14T12:02:00Z' }) },
+  ]);
+  await settle();
+  environment.element('check-update').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-notice').hidden, false);
+  assert.equal(environment.element('update-notice-text').textContent, '发现新版本 v0.3.0');
+  assert.equal(environment.element('pill-update').hidden, false);
+  assert.equal(environment.element('update-status').textContent, '检查更新失败');
+  assert.equal(environment.element('update-error').hidden, false);
+  assert.equal(environment.element('update-error').textContent, '无法连接 GitHub，请稍后重试。');
+  assert.equal(environment.element('balance').textContent, '123');
+  environment.element('check-update').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-notice').hidden, true);
+  assert.equal(environment.element('pill-update').hidden, true);
+  assert.equal(environment.element('update-status').textContent, '已是最新版本');
+  assert.equal(environment.element('update-error').hidden, true);
+  dispose();
+  environment.assertClean();
+});
+
+test('a rejected update request does not describe a previous check as the latest version', async () => {
+  const environment = createEnvironment();
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async action => {
+      if (action === 'status') return { ...successfulSnapshot(), updates: updateState() };
+      throw new Error('request failed');
+    },
+  });
+  await settle();
+  environment.element('check-update').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-status').textContent, '检查更新失败');
+  assert.match(environment.element('update-error').textContent, /暂时无法检查更新/);
+  assert.equal(environment.element('update-notice').hidden, true);
+  assert.equal(environment.element('balance').textContent, '123');
+  dispose();
+  environment.assertClean();
+});
+
+test('version strings remain text and an older status snapshot cannot replace a newer check', async () => {
+  const environment = createEnvironment();
+  const version = '0.3.0 <img src=x>';
+  const { dispose } = mountWithQueue(environment, [
+    { ...successfulSnapshot(), updates: updateState({ state: 'unchecked', checkedAt: null }) },
+    { updates: updateState({ state: 'available', latestVersion: version }) },
+    { ...successfulSnapshot(), updates: updateState({ state: 'unchecked', checkedAt: null }) },
+  ]);
+  await settle();
+  environment.element('check-update').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-notice-text').textContent, `发现新版本 v${version}`);
+  environment.element('refresh').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-status').textContent, `发现新版本 v${version}`);
+  assert.equal(environment.element('update-notice').hidden, false);
+  dispose();
+  environment.assertClean();
+});
+
+test('disposing during update checking prevents late results from restoring DOM or timers', async () => {
+  const environment = createEnvironment();
+  let completeCheck;
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async action => action === 'status' ? { ...successfulSnapshot(), updates: updateState() }
+      : new Promise(resolve => { completeCheck = resolve; }),
+  });
+  await settle();
+  environment.element('check-update').dispatch('click');
+  await settle();
+  dispose();
+  completeCheck({ updates: updateState({ state: 'available', latestVersion: '0.3.0' }) });
   await settle();
   environment.assertClean();
 });

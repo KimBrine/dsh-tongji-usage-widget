@@ -3,6 +3,26 @@ import assert from 'node:assert/strict';
 import { createUsageService } from '../lib/service.js';
 
 const configured = async () => ({ configured: true, type: 'token' });
+test('update checks do not block campus queries or require a login; manual checks never query usage', async () => {
+  let count = 0, queryCount = 0, available = { state: 'checking', currentVersion: '0.2.1' };
+  let finish;
+  const checker = { check: ({ force = false } = {}) => {
+    count++;
+    if (force) { available = { state: 'available', currentVersion: '0.2.1', latestVersion: '0.3.0' }; return Promise.resolve(available); }
+    return new Promise(resolve => { finish = resolve; });
+  }, status: () => available };
+  const service = createUsageService({ updateChecker: checker, credentialStatus: configured,
+    query: async () => { queryCount++; return { points: { planRemaining: 10 } }; } });
+  const value = await service.status();
+  assert.equal(value.report.points.planRemaining, 10);
+  assert.equal(value.updates.state, 'checking');
+  assert.equal((await service.checkUpdate()).updates.latestVersion, '0.3.0');
+  assert.equal(queryCount, 1); assert.equal(count, 2);
+  finish(available); service.dispose();
+  await assert.rejects(service.checkUpdate());
+  const noLogin = createUsageService({ updateChecker: { ...checker, check: async () => available }, credentialStatus: async () => ({ configured: false }) });
+  assert.equal((await noLogin.status()).updates.state, 'available'); noLogin.dispose();
+});
 test('shared requests, cache TTL and force cooldown avoid duplicate polling', async () => {
   let count = 0, clock = 1000;
   let release;

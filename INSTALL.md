@@ -64,7 +64,11 @@ Node.js 参数以数组传递，带空格和括号的目录作为一个完整参
 
 ## 导入登录令牌
 
-0.2.0 推荐使用 Chrome 助手自动更新，首次只需加载一次扩展并输入浮窗的连接码。扩展目录是项目根目录下的 `browser-extension`；具体步骤见 [README 自动更新登录](README.md#自动更新登录020)。助手不读取浏览器 Cookie 数据库、密码管理器或其它网站，只通过学校正常页面重新登录。
+当前插件与浏览器助手版本均为 0.2.2，推荐使用浏览器助手自动更新。同一个扩展目录 `browser-extension` 可用于 Edge 和 Chrome：Edge 打开 `edge://extensions`，Chrome 打开 `chrome://extensions`，启用开发者模式并加载已解压的扩展程序，再输入浮窗中“连接浏览器助手”生成的连接码。具体步骤见 [README 自动更新登录](README.md#自动更新登录020)。助手不读取浏览器 Cookie 数据库、密码管理器或其它网站，只通过学校正常页面重新登录。
+
+首次改用 Edge 时，先在 Edge 完成同济 AI 平台的学校登录；两个浏览器的学校登录状态互不共享。当前仅支持一个助手连接，最后一次配对的浏览器负责续期；切换浏览器会使原浏览器的旧连接失效，原浏览器再次使用时需重新配对。
+
+升级到 0.2.2 后，已经安装 Chrome 助手的用户需要在 `chrome://extensions` 点击“重新加载”，保留原加载目录即可保留配对。已安装的 Edge 助手在 `edge://extensions` 同样重新加载。无需先移除扩展。
 
 下面是备用的手动导入方式。
 
@@ -97,7 +101,7 @@ pwsh -File .\scripts\uninstall.ps1 -Profile web
 
 两个脚本均支持 `-Help`。它们不直接编辑宿主的 profile 清单，也不删除配置目录。
 
-Chrome 登录助手需要在 `chrome://extensions` 中单独移除，卸载 DSH bundle 不会卸载浏览器扩展。若只想暂停自动登录，可以先在浮窗设置中停用自动更新。
+浏览器登录助手需要在对应浏览器中单独移除：Edge 使用 `edge://extensions`，Chrome 使用 `chrome://extensions`。卸载 DSH bundle 不会卸载浏览器扩展。若只想暂停自动登录，可以先在浮窗设置中停用自动更新。
 
 ## 接入依据
 

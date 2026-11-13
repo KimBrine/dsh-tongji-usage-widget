@@ -69,3 +69,27 @@ test('automatic-login actions require the DSH operator guard and a bounded valid
     assert.equal((await response.json()).pairCode, '12345678'); assert.equal(calls, 1);
   } finally { cleanup(); await new Promise(resolve => server.close(resolve)); }
 });
+
+test('manual update checks require operator access and return version data without querying usage', async () => {
+  const routes = new Map(); let deny = true, checks = 0;
+  const ctx = { webServer: { register(route) { routes.set(route.path, route); return () => routes.delete(route.path); } },
+    connection: { requestRejection() { return deny ? 401 : undefined; } } };
+  const cleanup = registerRoutes(ctx, { status: async () => { throw new Error('usage must not be queried'); }, dispose() {},
+    checkUpdate: async () => { checks++; return { updates: { state: 'available', currentVersion: '0.2.1', latestVersion: '0.3.0' } }; } });
+  const server = createServer((req, res) => routes.get(new URL(req.url, 'http://local').pathname)?.handler(req, res));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}${BASE_PATH}/updates.json`;
+  const headers = { 'X-Tongji-Widget': '1' };
+  try {
+    assert.equal((await fetch(url)).status, 403);
+    assert.equal((await fetch(url, { headers })).status, 401);
+    deny = false;
+    assert.equal((await fetch(url, { headers: { ...headers, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    assert.equal((await fetch(url, { method: 'POST', headers })).status, 405);
+    assert.equal(checks, 0);
+    const response = await fetch(url, { headers });
+    assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal((await response.json()).updates.latestVersion, '0.3.0'); assert.equal(checks, 1);
+  } finally { cleanup(); await new Promise(resolve => server.close(resolve)); }
+  assert.equal(routes.size, 0);
+});

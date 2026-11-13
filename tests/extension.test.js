@@ -22,7 +22,7 @@ function sharedContext(extra = {}) {
   return context;
 }
 
-function worker({ config = true, job = metadata, command = null, completeStatus = 200, completeBody = { ok: true } } = {}) {
+function worker({ config = true, job = metadata, command = null, completeStatus = 200, completeBody = { ok: true }, navigatorLike } = {}) {
   const local = config ? { tongjiLoginBridge: { port: 17945, bridgeKey } } : {};
   const session = job ? { tongjiLoginJob: structuredClone(job) } : {};
   const requests = [], created = [], removed = [], storageWrites = [], listeners = {};
@@ -49,10 +49,10 @@ function worker({ config = true, job = metadata, command = null, completeStatus 
     if (path === '/v1/complete') return { ok: completeStatus >= 200 && completeStatus < 300, status: completeStatus, async json() { return completeBody; } };
     return { ok: true, status: 200, async json() { return body; } };
   };
-  const context = sharedContext({ chrome, fetch });
+  const context = sharedContext({ chrome, fetch, ...(navigatorLike === undefined ? {} : { navigator: navigatorLike }) });
   context.importScripts = () => {};
   vm.runInContext(sources['background.js'], context, { filename: 'background.js' });
-  return { local, session, requests, created, removed, storageWrites, listeners,
+  return { local, session, requests, created, removed, storageWrites, listeners, popupUrl: chrome.runtime.getURL('popup.html'),
     message: (value, sender = contentSender) => new Promise(resolve => listeners.message(value, sender, resolve)),
   };
 }
@@ -76,15 +76,61 @@ function content({ owned = true, candidate = freshToken, path = '/models/hub' } 
   return { calls, timers, get reads() { return reads; }, get clicks() { return clicks; }, async tick() { timers.shift()?.callback(); await flush(); } };
 }
 
+async function popup(status) {
+  const ids = ['browser', 'port', 'renew', 'focus', 'state', 'details', 'expiry', 'message', 'pair', 'status', 'pair-form', 'code'];
+  const elements = Object.fromEntries(ids.map(id => [id, { textContent: '', value: '', disabled: false, addEventListener() {} }]));
+  const context = vm.createContext({ Date, document: {
+    getElementById: id => elements[id],
+    querySelectorAll: () => ['renew', 'focus', 'pair', 'status'].map(id => elements[id]),
+  }, chrome: { runtime: { async sendMessage() { return { ok: true, status }; } } } });
+  vm.runInContext(sources['popup.js'], context, { filename: 'popup.js' });
+  await flush();
+  return elements;
+}
+
 test('extension permissions exclude cookies, history, debugger and broad tab access', async () => {
   const manifest = JSON.parse(await readFile(new URL('manifest.json', directory), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
+  assert.equal(manifest.version, '0.2.2');
   assert.deepEqual(manifest.permissions, ['storage', 'alarms']);
   assert.deepEqual(manifest.host_permissions, ['https://agi.tongji.edu.cn/*', 'http://127.0.0.1/*']);
   assert.deepEqual(manifest.content_scripts[0].matches, ['https://agi.tongji.edu.cn/*']);
   assert.equal(manifest.content_scripts[0].all_frames, false);
   assert.equal(manifest.externally_connectable, undefined);
   for (const [file, source] of Object.entries(sources)) assert.doesNotThrow(() => new vm.Script(source, { filename: file }));
+});
+
+test('browser detection is bounded to Edge or Chrome and recognizes Client Hints and Edge UA', () => {
+  const detect = sharedContext().TongjiLoginCore.detectBrowser;
+  assert.equal(detect(), 'chrome');
+  assert.equal(detect(null), 'chrome');
+  assert.equal(detect({}), 'chrome');
+  assert.equal(detect({ userAgentData: { brands: [{ brand: 'Microsoft Edge', version: '142' }, { brand: 'Chromium', version: '142' }] } }), 'edge');
+  assert.equal(detect({ userAgent: 'Mozilla/5.0 Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0' }), 'edge');
+  assert.equal(detect({ userAgentData: { brands: [{ brand: 'Google Chrome', version: '142' }] }, userAgent: 'Mozilla/5.0 Chrome/142.0.0.0 Safari/537.36' }), 'chrome');
+  assert.equal(detect({ userAgentData: { brands: [{ brand: 'Unknown Edge Browser' }] }, userAgent: 'UnknownBrowser/1.0' }), 'chrome');
+  assert.equal(detect({ userAgentData: { brands: 'Microsoft Edge' } }), 'chrome');
+  assert.equal(detect({ get userAgentData() { throw new Error('Unavailable'); }, userAgent: 'Edg/142.0' }), 'edge');
+  const core = sharedContext({ navigator: { userAgent: 'Edg/142.0' } }).TongjiLoginCore;
+  const runtime = { id: runtimeId, getURL: path => `chrome-extension://${runtimeId}/${path}` };
+  assert.equal(core.trustedPopupSender(popupSender, runtime), true);
+  assert.equal(core.trustedPopupSender({ ...popupSender, url: `ms-browser-extension://${runtimeId}/popup.html` }, runtime), false);
+});
+
+test('popup displays its current Edge or Chrome browser and keeps login instructions browser-aware', async () => {
+  const html = await readFile(new URL('popup.html', directory), 'utf8');
+  assert.match(html, /id="browser"/);
+  for (const [browser, name] of [['edge', 'Edge'], ['chrome', 'Chrome']]) {
+    const elements = await popup({ browser, paired: true, connected: true, state: 'queued', port: 17945 });
+    assert.equal(elements.browser.textContent, `当前浏览器：${name}`);
+    assert.equal(elements.state.textContent, '等待浏览器更新');
+    assert.ok(elements.details.textContent.includes(`${name} 自动更新`));
+    assert.equal(elements.renew.disabled, false);
+    if (browser === 'edge') assert.ok(!elements.details.textContent.includes('Chrome'));
+  }
+  const unpaired = await popup({ browser: 'edge', paired: false });
+  assert.equal(unpaired.browser.textContent, '当前浏览器：Edge');
+  assert.equal(unpaired.details.textContent, '先在 DSH 浮窗中生成配对码。');
 });
 
 test('candidate freshness rejects old, expired, future and malformed JWTs without exposing claims', () => {
@@ -202,7 +248,45 @@ test('pairing uses a bounded code and the extension identity header without disc
   const request = extension.requests.find(item => item.path === '/v1/pair');
   assert.equal(request.headers['X-Tongji-Extension'], runtimeId);
   assert.equal(request.headers.Authorization, undefined);
-  assert.equal(JSON.parse(request.body).code, '12345678');
+  assert.deepEqual(JSON.parse(request.body), { code: '12345678', browser: 'chrome' });
+  assert.equal(paired.status.browser, 'chrome');
   assert.ok(!JSON.stringify(paired).includes(bridgeKey));
   assert.equal(extension.local.tongjiLoginBridge.bridgeKey, bridgeKey);
+});
+
+test('Edge pairs anonymously with its browser hint and runs the same owned-tab renewal through chrome APIs', async () => {
+  for (const navigatorLike of [
+    { userAgent: 'Mozilla/5.0 Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0' },
+    { userAgentData: { brands: [{ brand: 'Microsoft Edge', version: '142' }] } },
+  ]) {
+    const extension = worker({ config: false, job: null, navigatorLike,
+      command: { id: metadata.id, requestedAt, kind: 'renew' } });
+    await flush();
+    assert.equal(extension.popupUrl, `chrome-extension://${runtimeId}/popup.html`);
+    const unpaired = await extension.message({ action: 'status' }, popupSender);
+    assert.equal(unpaired.status.browser, 'edge');
+    assert.equal(unpaired.status.paired, false);
+    const rejected = await extension.message({ action: 'pair', port: 17945, code: '12345678' },
+      { ...popupSender, url: `ms-browser-extension://${runtimeId}/popup.html` });
+    assert.equal(rejected.ok, false);
+    assert.equal(extension.requests.filter(item => item.path === '/v1/pair').length, 0);
+    const paired = await extension.message({ action: 'pair', port: 17945, code: '12345678' }, popupSender);
+    assert.equal(paired.ok, true);
+    assert.equal(paired.status.browser, 'edge');
+    const pairRequest = extension.requests.find(item => item.path === '/v1/pair');
+    assert.deepEqual(JSON.parse(pairRequest.body), { code: '12345678', browser: 'edge' });
+    assert.equal(pairRequest.headers.Authorization, undefined);
+    assert.equal(pairRequest.headers['X-Tongji-Extension'], runtimeId);
+    assert.equal(pairRequest.credentials, 'omit');
+    assert.equal(pairRequest.redirect, 'error');
+    assert.equal(extension.created.length, 1);
+    assert.equal(extension.created[0].url, 'https://agi.tongji.edu.cn/login');
+    assert.equal(extension.created[0].active, false);
+    const completed = await extension.message({ action: 'candidate', jobId: metadata.id, accessToken: freshToken });
+    assert.equal(completed.ok, true);
+    assert.equal(extension.requests.filter(item => item.path === '/v1/complete').length, 1);
+    assert.deepEqual(extension.removed, [777]);
+    assert.ok(!JSON.stringify(extension.storageWrites).includes(freshToken));
+    assert.ok(!JSON.stringify(paired).includes(bridgeKey));
+  }
 });

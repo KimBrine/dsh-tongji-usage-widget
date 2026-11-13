@@ -31,10 +31,16 @@ const ctx = new Context();
 const originalFetch = globalThis.fetch;
 let allowedOrigin;
 let blockedExternalRequests = 0;
+let updateFixtureRequests = 0;
 let guardCalls = 0;
 let widgetFiber;
 globalThis.fetch = (input, init) => {
   const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+  if (url.href === 'https://raw.githubusercontent.com/KimBrine/dsh-tongji-usage-widget/main/package.json') {
+    updateFixtureRequests++;
+    assert.equal(init?.headers?.Authorization, undefined);
+    return Promise.resolve(new Response(JSON.stringify({ name: 'dsh-tongji-usage-widget', version: '0.2.1' })));
+  }
   if (!allowedOrigin || url.origin !== allowedOrigin) {
     blockedExternalRequests++;
     return Promise.reject(new Error('Integration smoke blocks every non-fixture network destination.'));
@@ -106,10 +112,15 @@ try {
   assert.equal((await fetch(statusUrl, { headers: { 'X-Tongji-Widget': '1', 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
   assert.equal(guardCalls, 1, 'cross-site request must be rejected before the host guard');
   assert.equal((await fetch(statusUrl, { method: 'POST' })).status, 405);
+  const updatesUrl = `${allowedOrigin}${BASE_PATH}/updates.json`;
+  assert.equal((await fetch(updatesUrl)).status, 403);
+  assert.equal((await fetch(updatesUrl, { headers: { 'X-Tongji-Widget': '1' } })).status, 401);
+  assert.equal((await fetch(updatesUrl, { method: 'POST' })).status, 405);
 
   await widgetFiber.dispose();
   assert.equal((await fetch(`${allowedOrigin}${BASE_PATH}/widget.js`)).status, 404, 'unload must remove the script route');
   assert.equal((await fetch(statusUrl, { headers: { 'X-Tongji-Widget': '1' } })).status, 404, 'unload must remove the status route');
+  assert.equal((await fetch(updatesUrl, { headers: { 'X-Tongji-Widget': '1' } })).status, 404, 'unload must remove update checking');
   assert.equal(webServer.collectIndexInjections().length, 0, 'unload must remove the desktop injection listener');
   assert.ok(!webServer.renderIndex('<html><body></body></html>').includes(BASE_PATH), 'unload must remove the Web index tap');
   assert.equal(blockedExternalRequests, 0, 'the service must never attempt an external query');
@@ -124,10 +135,12 @@ try {
       'real Cordis dependency injection and real HTTP widget route',
       'injected script syntax and single Web index loader',
       '403 missing marker / 401 host guard / 403 cross-site / 405 POST',
-      'plugin unload removes both HTTP routes, injection listener, and index tap',
+      'update route enforces the same operator boundary',
+      'plugin unload removes HTTP routes, injection listener, and index tap',
     ],
     campusRequests: 0,
     profileWrites: 0,
+    updateFixtureRequests,
   }, null, 2));
 } finally {
   try { await ctx.fiber.dispose(); }

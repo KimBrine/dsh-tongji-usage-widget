@@ -30,16 +30,24 @@ async function fixture({ fetchImpl, environment = {}, oldToken } = {}) {
   const port = (await manager.status()).port;
   let key = '';
   const request = async (path, body, extra = {}) => {
-    const response = await fetch(`http://127.0.0.1:${port}${path}`, { method: body === undefined ? 'GET' : 'POST',
-      headers: { Origin: `chrome-extension://${id}`, 'X-Tongji-Extension': id,
-        ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...extra },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    const data = await response.json(); return { status: response.status, data };
+    const headers = { Origin: `chrome-extension://${id}`, 'X-Tongji-Extension': id,
+      ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...extra };
+    for (const name of Object.keys(headers)) if (headers[name] === null) delete headers[name];
+    // OS-assigned loopback ports may be in fetch's browser blocked-port list.
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({ hostname: '127.0.0.1', port, path, method: body === undefined ? 'GET' : 'POST', headers }, response => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => { try { resolve({ status: response.statusCode, data: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); } catch (error) { reject(error); } });
+        response.on('error', reject);
+      });
+      req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
+    });
   };
-  const pair = async () => {
+  const pair = async (browser) => {
     const setup = await manager.action('pair');
     assert.match(setup.pairCode, /^\d{8}$/);
-    const result = await request('/v1/pair', { code: setup.pairCode });
+    const result = await request('/v1/pair', { code: setup.pairCode, ...(browser === undefined ? {} : { browser }) });
     assert.equal(result.status, 200);
     key = result.data.bridgeKey;
     assert.match(key, /^[a-f0-9]{64}$/);
@@ -72,6 +80,45 @@ test('pairing and real loopback completion validate before saving; status never 
   } finally { await f.cleanup(); }
 });
 
+test('Edge uses Chromium extension authentication, persists its browser and revokes the previous pairing', async () => {
+  const f = await fixture(); let restarted;
+  try {
+    await f.pair(); const oldKey = f.key();
+    assert.equal((await f.manager.status()).browser, 'chrome', 'old helper requests remain compatible');
+    const setup = await f.manager.action('pair');
+    const invalid = await f.request('/v1/pair', { code: setup.pairCode, browser: 'edge://forged' });
+    assert.equal(invalid.status, 400);
+    await f.pair('edge');
+    assert.equal((await f.manager.status()).browser, 'edge');
+    assert.equal((await f.request('/v1/status', undefined, { Authorization: `Bearer ${oldKey}` })).status, 403);
+    assert.equal((await f.request('/v1/status', undefined, { Origin: `edge-extension://${id}` })).status, 403, 'Edge still uses chrome-extension, not a new trusted scheme');
+    const command = (await f.request('/v1/command')).data.job;
+    assert.equal(command.kind, 'renew', 'switching browser immediately queues a new trial');
+    const fresh = jwt();
+    assert.equal((await f.request('/v1/complete', { jobId: command.id, accessToken: fresh })).status, 200);
+    assert.equal(JSON.parse(await readFile(f.configFile, 'utf8')).browser, 'edge');
+    await f.manager.dispose();
+    restarted = createAutoLoginManager({ port: 0, configFile: f.configFile, credentialFile: f.credentialFile, environment: {} });
+    await restarted.start();
+    assert.equal((await restarted.status()).browser, 'edge');
+    assert.match((await restarted.status()).message, /Edge/);
+  } finally { await restarted?.dispose(); await f.cleanup(); }
+});
+
+test('existing Chrome bridge settings without a browser field retain their pairing', async () => {
+  const f = await fixture(); let restarted;
+  try {
+    await f.pair();
+    await f.manager.dispose();
+    const saved = JSON.parse(await readFile(f.configFile, 'utf8')); delete saved.browser;
+    await writePrivateJson(f.configFile, saved);
+    restarted = createAutoLoginManager({ port: 0, configFile: f.configFile, credentialFile: f.credentialFile, environment: {} });
+    await restarted.start();
+    const status = await restarted.status();
+    assert.equal(status.paired, true); assert.equal(status.browser, 'chrome');
+  } finally { await restarted?.dispose(); await f.cleanup(); }
+});
+
 test('disabling during concurrent renewal preparation leaves no executable login job', async () => {
   const f = await fixture();
   try {
@@ -102,8 +149,7 @@ test('browser origins, paired extension identity and bearer key are all enforced
         }); raw.on('error', reject); raw.end();
     });
     assert.equal(forgedHostStatus, 403);
-    const noOrigin = await fetch(`http://127.0.0.1:${(await f.manager.status()).port}/v1/status`, {
-      headers: { 'X-Tongji-Extension': id, Authorization: `Bearer ${f.key()}` } });
+    const noOrigin = await f.request('/v1/status', undefined, { Origin: null });
     assert.equal(noOrigin.status, 200, 'privileged extension requests may omit Origin');
   } finally { await f.cleanup(); }
 });

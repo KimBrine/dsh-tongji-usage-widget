@@ -1,6 +1,6 @@
 {
   "name": "dsh-tongji-usage-widget",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "同济 AI 平台积分监控浮窗，适配 DeepSeek Harness Web 与官方桌面端",
   "type": "module",
   "main": "lib/index.js",
