@@ -8,16 +8,16 @@ try {
   if (command === 'status') {
     const status = await getCredentialStatus();
     console.log(status.configured ? `已配置 ${status.type === 'token' ? 'access_token' : 'Cookie'}。` : '尚未配置登录令牌。');
-    console.log(`共享凭据路径：${target}`);
+    console.log(`本机凭据路径：${target}`);
   } else if (command === 'clear') {
     await unlink(target).catch(error => { if (error.code !== 'ENOENT') throw error; });
-    console.log('已清除本机共享登录凭据（Qoder 与 DSH 共用）。');
+    console.log('已清除本机登录凭据。读取同一文件的其他本机工具也会受影响。');
   } else if (command === 'set-token') {
     console.log("在已登录的 https://agi.tongji.edu.cn 页面控制台执行：\ncopy(sessionStorage.getItem('access_token'))");
     const token = (await secretInput('粘贴 access_token 后按回车（不显示输入）：')).trim().replace(/^Bearer\s+/i, '');
     if (!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(token)) throw new Error('需要完整的网站 JWT access_token。');
     await saveAccessToken(token);
-    console.log('已保存到本机共享凭据文件。回到浮窗点击刷新即可。');
+    console.log('已保存到本机凭据文件。回到浮窗点击刷新即可。');
   } else {
     console.log('用法：node scripts/auth.mjs status | set-token | clear\n不要通过命令行参数或聊天传入令牌。');
     if (command && !['--help', '-h'].includes(command)) process.exitCode = 2;

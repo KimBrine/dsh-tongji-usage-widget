@@ -4,6 +4,8 @@
 
 当前插件与浏览器助手版本均为 **0.2.2**，支持 Edge 和 Chrome。
 
+本仓库发布 DSH 插件及配套的浏览器登录助手。原 Qoder 插件是独立项目，未包含在本仓库中。
+
 ## 开始使用
 
 完整安装与卸载方式见 [INSTALL.md](INSTALL.md)。本项目采用 [MIT 许可证](LICENSE)。
@@ -39,7 +41,7 @@ pwsh -File .\scripts\install.ps1 -Profile web
 
 ### 自动更新登录（0.2.0）
 
-连接浏览器助手后，DSH 会在令牌到期前 15 分钟请求一次正常的学校重新登录。助手在自己创建的标签页中点击网站原有的统一认证入口，获得新令牌后交给本机后端。后端通过平台 `/auth/me` 验证真实性和账号一致性，再原子替换共享凭据；积分查询随后自动恢复。0.2.2 起，同一个助手文件夹可在 Edge 或 Chrome 中加载。
+连接浏览器助手后，DSH 会在令牌到期前 15 分钟请求一次正常的学校重新登录。助手在自己创建的标签页中点击网站原有的统一认证入口，获得新令牌后交给本机后端。后端通过平台 `/auth/me` 验证真实性和账号一致性，再原子替换本机凭据；积分查询随后自动恢复。0.2.2 起，同一个助手文件夹可在 Edge 或 Chrome 中加载。
 
 一次性设置：
 
@@ -59,7 +61,7 @@ pwsh -File .\scripts\install.ps1 -Profile web
 
 ### 手动导入（备用）
 
-默认读取本机凭据；使用过早期 Qoder 版的用户可复用同一份文件：
+插件默认将登录凭据保存在当前用户目录：
 
 ```text
 %USERPROFILE%\.config\tongji-ai-usage\credentials.json
@@ -79,7 +81,7 @@ copy(sessionStorage.getItem('access_token'))
 
 只把令牌粘贴到本机导入终端的隐藏输入中，按回车保存，再点击浮窗刷新。不要把令牌发进聊天或作为命令行参数。网站登录 `access_token` 与模型 API Key 不同。
 
-`node scripts/auth.mjs status` 只显示是否已配置；`clear` 删除共享凭据，**也会影响 Qoder 插件**。环境变量 `TONGJI_AI_ACCESS_TOKEN`、`TONGJI_AI_COOKIE` 优先于文件；DSH 进程需继承该变量。Cookie 是兼容后备，不保证平台接受。
+`node scripts/auth.mjs status` 只显示是否已配置；`clear` 删除上述本机凭据文件。如果其他本机工具也读取同一文件，它们也会失去这份凭据。环境变量 `TONGJI_AI_ACCESS_TOKEN`、`TONGJI_AI_COOKIE` 优先于文件；DSH 进程需继承该变量。Cookie 是兼容后备，不保证平台接受。
 
 后端只向 `https://agi.tongji.edu.cn` 发起 GET 请求，禁止重定向。令牌不发给浮窗，不写入项目目录或日志；插件不额外写入浏览器或扩展存储，平台自身仍使用 sessionStorage 保存登录态。Windows 导入时限制凭据文件 ACL；其他系统使用 0600 权限。
 
@@ -92,7 +94,7 @@ copy(sessionStorage.getItem('access_token'))
 - 低积分阈值默认 100；每日积分预算默认关闭。设置填 0 可关闭对应提醒。提醒在卡片或胶囊内显示，不发送系统通知。
 - 网络失败时保留最后成功值并标“更新失败”；登录失效时清除旧值，已连接助手时请求自动更新；部分统计缺失显示未知，不补成零。
 
-所有统计是**同济平台账户范围**，包含 Qoder、DSH 和其他客户端的使用。这里不按 DSH 单轮会话估算扣费。今日/昨日/近 7 天不等同于套餐重置周期。
+所有统计是**同济平台账户范围**，包含该账户下所有客户端的使用。这里不按 DSH 单轮会话估算扣费。今日/昨日/近 7 天不等同于套餐重置周期。
 
 ## 插件新版本提醒（0.2.1）
 
@@ -135,4 +137,4 @@ node scripts/preview.mjs --demo --demo-update --port 17943
 
 `lib/api.js` 查询与归一化，`lib/service.js` 脱敏缓存，`lib/index.js` 宿主接入，`lib/widget.js` Shadow DOM 浮窗；`scripts/` 提供本机登录、预览、安装和卸载工具。
 
-同济接口及凭据文件约定延续本项目的早期 Qoder 版本。DSH 双端注入参考 [DeepSeek Balance Whale Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，核对 commit `5247dd6813d6e4430728f39ccc63d43cda046022`（v0.4.2）。署名与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+DSH 双端注入参考 [DeepSeek Balance Whale Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，核对 commit `5247dd6813d6e4430728f39ccc63d43cda046022`（v0.4.2）。署名与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

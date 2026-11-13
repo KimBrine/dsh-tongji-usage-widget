@@ -2,6 +2,8 @@
 
 插件包名：`dsh-tongji-usage-widget`。源码目录即插件根目录，不需要另找子目录。安装前先把整个目录放在长期保留的位置。
 
+本说明适用于本仓库的 DSH 插件和浏览器登录助手；原 Qoder 插件是独立项目，未包含在本仓库中。
+
 ## 官方 DSH 桌面客户端
 
 桌面客户端读取 `desktop` profile。当前本机 DSH `0.1.7-rc.2` 的官方 CLI 明确拒绝管理该 profile，应通过桌面会话内置的 `plugin_manager` 安装。
@@ -72,7 +74,7 @@ Node.js 参数以数组传递，带空格和括号的目录作为一个完整参
 
 下面是备用的手动导入方式。
 
-安装脚本不读取或传递 `access_token`。本版本复用 Qoder 插件的本机共享凭据；已配置且未过期时可以直接刷新。需要更新时，在源码目录的本机交互式终端执行：
+安装脚本不读取或传递 `access_token`。本插件默认读取 `%USERPROFILE%\.config\tongji-ai-usage\credentials.json` 中的本机凭据；已配置且未过期时可以直接刷新。需要更新时，在源码目录的本机交互式终端执行：
 
 ```powershell
 node scripts/auth.mjs set-token
@@ -97,7 +99,7 @@ pwsh -File .\scripts\uninstall.ps1 -Profile web -WhatIf
 pwsh -File .\scripts\uninstall.ps1 -Profile web
 ```
 
-卸载脚本只移除从当前目录安装的 Web 链接；已不存在时直接结束，遇到其他来源时停止。卸载后重启宿主、刷新页面。脚本不删除源码、保存的令牌或用户设置。若确实需要清除共享登录凭据，可执行 `node scripts/auth.mjs clear`；该操作也会影响使用同一凭据文件的 Qoder 插件。
+卸载脚本只移除从当前目录安装的 Web 链接；已不存在时直接结束，遇到其他来源时停止。卸载后重启宿主、刷新页面。脚本不删除源码、保存的令牌或用户设置。若确实需要清除本机登录凭据，可执行 `node scripts/auth.mjs clear`；如果其他本机工具也读取同一凭据文件，它们也会失去这份凭据。
 
 两个脚本均支持 `-Help`。它们不直接编辑宿主的 profile 清单，也不删除配置目录。
 
