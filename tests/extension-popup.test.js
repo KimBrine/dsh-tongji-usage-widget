@@ -10,9 +10,10 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 const edgeNavigator = { userAgent: 'Mozilla/5.0 Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0' };
 const chromeNavigator = { userAgent: 'Mozilla/5.0 Chrome/142.0.0.0 Safari/537.36' };
 
-function popup(status, { navigatorLike = edgeNavigator, loadShared = true } = {}) {
+function popup(status, { navigatorLike = edgeNavigator, loadShared = true, reloadError = null } = {}) {
   const elements = new Map();
   const calls = [];
+  let reloads = 0;
   for (const match of markup.matchAll(/<([a-z][\w-]*)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const listeners = new Map();
     elements.set(match[2], {
@@ -25,14 +26,17 @@ function popup(status, { navigatorLike = edgeNavigator, loadShared = true } = {}
     getElementById(id) { assert.ok(elements.has(id), `missing popup element: ${id}`); return elements.get(id); },
     querySelectorAll(selector) { assert.equal(selector, 'button'); return [...elements.values()].filter(element => element.tagName === 'button'); },
   };
-  const chrome = { runtime: { async sendMessage(message) { calls.push(message); return { ok: true, status: typeof status === 'function' ? await status(message) : status }; } } };
+  const chrome = { runtime: {
+    async sendMessage(message) { calls.push(message); return { ok: true, status: typeof status === 'function' ? await status(message) : status }; },
+    reload() { reloads++; if (reloadError) throw reloadError; },
+  } };
   const context = vm.createContext({ document, chrome, navigator: navigatorLike });
   for (const [, file] of markup.matchAll(/<script src="([^"]+)"><\/script>/g)) {
     if (!loadShared && file === 'shared.js') continue;
     assert.ok(sources[file], `unexpected popup script: ${file}`);
     vm.runInContext(sources[file], context, { filename: file });
   }
-  return { element: id => elements.get(id), calls };
+  return { element: id => elements.get(id), calls, get reloads() { return reloads; } };
 }
 
 const connected = overrides => ({ paired: true, connected: true, enabled: true, browser: 'edge', state: 'idle', port: 17945, hasOwnedTab: false, startupNotifications: true, ...overrides });
@@ -47,6 +51,7 @@ test('the paired Edge popup describes twelve-hour and browser-start renewal with
   assert.equal(view.element('connection').textContent, '已连接本机 DSH');
   assert.equal(view.element('pair-settings').open, false);
   assert.equal(view.element('compatibility').hidden, true);
+  assert.equal(view.element('reload-assistant').hidden, true);
   assert.deepEqual(view.calls.map(call => call.action), ['status']);
 });
 
@@ -87,6 +92,7 @@ test('a successful old-worker status without browser metadata still identifies t
   assert.equal(view.element('pair-settings-summary').textContent, '重新配对 / 更换端口');
   assert.equal(view.element('code').value, '');
   assert.equal(view.element('compatibility').hidden, false);
+  assert.equal(view.element('reload-assistant').hidden, false);
   assert.equal(view.element('compatibility').textContent, '助手后台需要重新加载，才能启用启动自动更新；当前连接正常。');
   assert.equal(view.element('details').textContent, '每12小时尝试更新，浏览器助手启动时也会更新。');
 });
@@ -121,5 +127,28 @@ test('the worker browser name remains a compatibility fallback if shared browser
   const view = popup(connected(), { loadShared: false });
   await settle();
   assert.equal(view.element('browser').textContent, '当前浏览器：Edge');
+  assert.equal(view.element('connection').textContent, '已连接本机 DSH');
+});
+
+test('reloading an old helper restarts only this extension once without pairing or renewal requests', async () => {
+  const view = popup(connected({ startupNotifications: undefined }));
+  await settle();
+  assert.equal(view.element('reload-assistant').hidden, false);
+  view.element('reload-assistant').dispatch('click');
+  view.element('reload-assistant').dispatch('click');
+  assert.equal(view.reloads, 1);
+  assert.equal(view.element('reload-assistant').disabled, true);
+  assert.deepEqual(view.calls.map(call => call.action), ['status']);
+  assert.equal(view.element('message').textContent, '');
+});
+
+test('a helper reload exception displays only the safe extension-management instruction', async () => {
+  const view = popup(connected({ startupNotifications: undefined }), { reloadError: new Error('sensitive browser exception') });
+  await settle();
+  view.element('reload-assistant').dispatch('click');
+  assert.equal(view.reloads, 1);
+  assert.equal(view.element('reload-assistant').disabled, false);
+  assert.equal(view.element('message').textContent, '无法重新加载，请在扩展管理页重新加载助手');
+  assert.deepEqual(view.calls.map(call => call.action), ['status']);
   assert.equal(view.element('connection').textContent, '已连接本机 DSH');
 });

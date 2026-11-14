@@ -1,6 +1,7 @@
 (function () {
   'use strict';
   const byId = id => document.getElementById(id);
+  let reloading = false;
   const localBrowser = (() => {
     try {
       const browser = globalThis.TongjiLoginCore?.detectBrowser?.(globalThis.navigator);
@@ -29,6 +30,8 @@
     const compatibility = isConnected && status.startupNotifications !== true ? '助手后台需要重新加载，才能启用启动自动更新；当前连接正常。' : '';
     byId('compatibility').hidden = !compatibility;
     byId('compatibility').textContent = compatibility;
+    byId('reload-assistant').hidden = !compatibility;
+    byId('reload-assistant').disabled = reloading;
     byId('port').value = String(status.port || 17945);
     byId('renew').disabled = !status.paired || !status.connected;
     byId('focus').disabled = !status.hasOwnedTab;
@@ -61,5 +64,17 @@
   byId('renew').addEventListener('click', () => send({ action: 'renew' }, '已请求更新。需要你登录时会提示。'));
   byId('focus').addEventListener('click', () => send({ action: 'focus' }, '已打开助手创建的登录页。'));
   byId('status').addEventListener('click', () => send({ action: 'status' }));
+  byId('reload-assistant').addEventListener('click', () => {
+    if (reloading || byId('reload-assistant').hidden) return;
+    reloading = true;
+    byId('reload-assistant').disabled = true;
+    byId('message').textContent = '';
+    try { chrome.runtime.reload(); }
+    catch {
+      reloading = false;
+      byId('reload-assistant').disabled = false;
+      byId('message').textContent = '无法重新加载，请在扩展管理页重新加载助手';
+    }
+  });
   void send({ action: 'status' });
 })();

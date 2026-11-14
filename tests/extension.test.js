@@ -417,3 +417,54 @@ test('an unpaired assistant waits for pairing, then notifies once and claims one
   assert.equal(extension.requests.filter(item => item.path === '/v1/browser-start').length, 1);
   assert.equal(extension.created.length, 1);
 });
+
+test('re-pairing an acknowledged browser session announces a new session and merges one pending job', async () => {
+  const priorId = '77777777-7777-4777-8777-777777777777';
+  const nextId = '88888888-8888-4888-8888-888888888888';
+  let idCalls = 0;
+  const extension = worker({ sessionData: { [sessionKey]: { id: priorId, notified: true }, tongjiLoginJob: structuredClone(metadata) },
+    command: { id: metadata.id, requestedAt, kind: 'renew' }, randomUUIDImpl: () => { idCalls++; return nextId; } });
+  await flush();
+  assert.equal(extension.requests.filter(item => item.path === '/v1/browser-start').length, 0);
+  const paired = await extension.message({ action: 'pair', port: 17945, code: '12345678' }, popupSender);
+  assert.equal(paired.ok, true);
+  assert.equal(idCalls, 1);
+  const starts = extension.requests.filter(item => item.path === '/v1/browser-start');
+  assert.equal(starts.length, 1);
+  assert.deepEqual(JSON.parse(starts[0].body), { sessionId: nextId });
+  assert.equal(extension.session[sessionKey].id, nextId);
+  assert.equal(extension.session[sessionKey].notified, true);
+  assert.equal(extension.created.length, 1);
+  assert.equal(extension.session.tongjiLoginJob.id, metadata.id);
+  extension.listeners.alarm({ name: 'tongji-login-bridge-poll' });
+  await flush();
+  assert.equal(extension.created.length, 1);
+  assert.equal(extension.requests.filter(item => item.path === '/v1/browser-start').length, 1);
+  assert.ok(!JSON.stringify(paired).includes(bridgeKey));
+});
+
+test('a late startup acknowledgement cannot recreate a session cleared by re-pairing', async () => {
+  const priorId = '99999999-9999-4999-8999-999999999999';
+  const nextId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  let starts = 0, ids = 0, releasePrior, releaseNext;
+  const priorGate = new Promise(resolve => { releasePrior = resolve; });
+  const nextGate = new Promise(resolve => { releaseNext = resolve; });
+  const extension = worker({ job: null, randomUUIDImpl: () => ids++ ? nextId : priorId,
+    onBrowserStart: () => ++starts === 1 ? priorGate : nextGate });
+  await flush();
+  assert.equal(extension.session[sessionKey].id, priorId);
+  assert.equal(extension.session[sessionKey].notified, false);
+  const paired = await extension.message({ action: 'pair', port: 17945, code: '12345678' }, popupSender);
+  assert.equal(paired.ok, true);
+  assert.equal(extension.session[sessionKey], undefined);
+  const writesAfterClear = extension.storageWrites.length;
+  releasePrior(); await flush();
+  assert.equal(starts, 2, 'pairing schedules another poll after the in-flight poll finishes');
+  assert.equal(extension.session[sessionKey].id, nextId);
+  assert.equal(extension.session[sessionKey].notified, false);
+  assert.ok(!extension.storageWrites.slice(writesAfterClear).some(write => write[sessionKey]?.id === priorId));
+  releaseNext(); await flush();
+  assert.equal(extension.session[sessionKey].id, nextId);
+  assert.equal(extension.session[sessionKey].notified, true);
+  assert.equal(ids, 2);
+});

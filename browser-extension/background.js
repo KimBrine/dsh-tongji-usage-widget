@@ -16,6 +16,7 @@ importScripts('shared.js');
   let submitting = false;
   const ssoClaims = new Set();
   let jobWrites = Promise.resolve();
+  let sessionWrites = Promise.resolve();
   const safeCodes = new Set(['INVALID_PORT', 'INVALID_PAIR_CODE', 'PAIR_REJECTED', 'BRIDGE_OFFLINE', 'BRIDGE_UNAUTHORIZED', 'BROWSER_ERROR', 'LOGIN_REQUIRED', 'ACCOUNT_MISMATCH', 'INVALID_TOKEN', 'JOB_EXPIRED', 'NOT_PAIRED', 'NO_LOGIN_TAB', 'BUSY']);
   const safeCode = error => safeCodes.has(error?.message) ? error.message : 'BROWSER_ERROR';
   async function readConfig() {
@@ -60,23 +61,34 @@ importScripts('shared.js');
   async function reportFailure(config, job, code) {
     try { await request(config, '/v1/failure', { method: 'POST', body: { jobId: job.id, code } }); } catch { /* the next poll retries connection */ }
   }
+  function changeBrowserSession(update) {
+    const task = sessionWrites.then(update);
+    sessionWrites = task.catch(() => {});
+    return task;
+  }
   async function notifyBrowserStart(config) {
-    let session = (await chrome.storage.session.get(SESSION_KEY))[SESSION_KEY];
-    const valid = session && typeof session.id === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(session.id) && typeof session.notified === 'boolean';
-    // onInstalled and the worker's default boot may overlap. Reuse a session already
-    // created/attempted by this worker so that those events cannot announce two IDs.
-    if (!valid || (installResetRequested && !sessionCreatedHere && !startAttemptedHere)) {
-      session = { id: crypto.randomUUID(), notified: false };
-      sessionCreatedHere = true;
-      await chrome.storage.session.set({ [SESSION_KEY]: session });
-    }
-    installResetRequested = false;
+    const session = await changeBrowserSession(async () => {
+      let current = (await chrome.storage.session.get(SESSION_KEY))[SESSION_KEY];
+      const valid = current && typeof current.id === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(current.id) && typeof current.notified === 'boolean';
+      // onInstalled and the worker's default boot may overlap. Reuse a session already
+      // created/attempted by this worker so that those events cannot announce two IDs.
+      if (!valid || (installResetRequested && !sessionCreatedHere && !startAttemptedHere)) {
+        current = { id: crypto.randomUUID(), notified: false };
+        sessionCreatedHere = true;
+        await chrome.storage.session.set({ [SESSION_KEY]: current });
+      }
+      installResetRequested = false;
+      return current;
+    });
     if (session.notified) return;
     startAttemptedHere = true;
     await request(config, '/v1/browser-start', { method: 'POST', body: { sessionId: session.id } });
     // Persist only after acknowledgement. An offline bridge is retried with the same
     // non-secret ID on the next alarm; a revived MV3 worker reuses this session record.
-    await chrome.storage.session.set({ [SESSION_KEY]: { id: session.id, notified: true } });
+    await changeBrowserSession(async () => {
+      const current = (await chrome.storage.session.get(SESSION_KEY))[SESSION_KEY];
+      if (current?.id === session.id) await chrome.storage.session.set({ [SESSION_KEY]: { id: session.id, notified: true } });
+    });
   }
   async function poll({ again = false } = {}) {
     if (polling) { if (again) pollAgain = true; return; }
@@ -146,8 +158,9 @@ importScripts('shared.js');
       const response = await request({ port }, '/v1/pair', { method: 'POST', body: { code, browser }, anonymous: true });
       if (typeof response.bridgeKey !== 'string' || response.bridgeKey.length < 20) throw new Error('PAIR_REJECTED');
       await chrome.storage.local.set({ [CONFIG_KEY]: { port, bridgeKey: response.bridgeKey } });
+      await changeBrowserSession(() => chrome.storage.session.remove(SESSION_KEY));
       await writeJob(null);
-      await poll();
+      await poll({ again: true });
       return { ok: true, status: await status() };
     }
     if (message.action === 'status') { await poll(); return { ok: true, status: await status() }; }
