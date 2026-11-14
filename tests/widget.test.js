@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
 import { mountWidget } from '../lib/widget.js';
+
+const { version: currentVersion } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 
 // Only the DOM and timer surface used by mountWidget is emulated; requests remain observable.
 function createEnvironment() {
@@ -326,6 +329,24 @@ test('a paired browser with unknown identity is not assumed to be Chrome', async
   environment.assertClean();
 });
 
+test('automatic login explains the twelve-hour and browser-start policy using backend interval metadata', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [
+    autoSnapshot(autoLoginState({ browser: 'edge', message: '旧的临近到期提示。' })),
+    autoSnapshot(autoLoginState({ browser: 'edge', renewIntervalHours: 6 })),
+  ]);
+  await settle();
+  assert.match(environment.element('auto-state').textContent, /Edge 助手已连接，每12小时尝试更新，浏览器助手启动时也会更新/);
+  assert.match(environment.element('extension-guide').textContent, /每12小时尝试更新，浏览器助手启动时也会更新/);
+  assert.ok(!environment.element('auto-state').textContent.includes('临近到期'));
+  environment.element('refresh').dispatch('click');
+  await settle();
+  assert.match(environment.element('auto-state').textContent, /每6小时尝试更新/);
+  assert.match(environment.element('extension-guide').textContent, /每6小时尝试更新/);
+  dispose();
+  environment.assertClean();
+});
+
 test('pairing displays and copies a leading-zero connection code without replacing the report', async () => {
   const environment = createEnvironment();
   const unpaired = autoLoginState({ state: 'unpaired', paired: false, connected: false });
@@ -415,7 +436,7 @@ test('disposing while a pairing action is pending prevents its result from addin
 });
 
 const updateState = (overrides = {}) => ({
-  state: 'current', currentVersion: '0.2.2', latestVersion: '0.2.2',
+  state: 'current', currentVersion, latestVersion: currentVersion,
   url: 'https://github.com/KimBrine/dsh-tongji-usage-widget',
   checkedAt: '2026-11-14T12:00:00Z', error: null, ...overrides,
 });
@@ -460,7 +481,7 @@ test('manual update checking coalesces clicks and only changes version metadata'
   });
   await settle();
   environment.element('settings-toggle').dispatch('click');
-  assert.equal(environment.element('update-current').textContent, '当前版本 v0.2.2');
+  assert.equal(environment.element('update-current').textContent, `当前版本 v${currentVersion}`);
   assert.equal(environment.element('update-status').textContent, '已是最新版本');
   assert.match(environment.element('update-checked-at').textContent, /上次检查：/);
   environment.element('check-update').dispatch('click');

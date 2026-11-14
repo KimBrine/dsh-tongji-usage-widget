@@ -6,8 +6,13 @@ importScripts('shared.js');
   const browser = core.detectBrowser();
   const CONFIG_KEY = 'tongjiLoginBridge';
   const JOB_KEY = 'tongjiLoginJob';
+  const SESSION_KEY = 'tongjiLoginBrowserSession';
   const ALARM = 'tongji-login-bridge-poll';
   let polling = false;
+  let pollAgain = false;
+  let installResetRequested = false;
+  let sessionCreatedHere = false;
+  let startAttemptedHere = false;
   let submitting = false;
   const ssoClaims = new Set();
   let jobWrites = Promise.resolve();
@@ -55,12 +60,31 @@ importScripts('shared.js');
   async function reportFailure(config, job, code) {
     try { await request(config, '/v1/failure', { method: 'POST', body: { jobId: job.id, code } }); } catch { /* the next poll retries connection */ }
   }
-  async function poll() {
-    if (polling) return;
+  async function notifyBrowserStart(config) {
+    let session = (await chrome.storage.session.get(SESSION_KEY))[SESSION_KEY];
+    const valid = session && typeof session.id === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(session.id) && typeof session.notified === 'boolean';
+    // onInstalled and the worker's default boot may overlap. Reuse a session already
+    // created/attempted by this worker so that those events cannot announce two IDs.
+    if (!valid || (installResetRequested && !sessionCreatedHere && !startAttemptedHere)) {
+      session = { id: crypto.randomUUID(), notified: false };
+      sessionCreatedHere = true;
+      await chrome.storage.session.set({ [SESSION_KEY]: session });
+    }
+    installResetRequested = false;
+    if (session.notified) return;
+    startAttemptedHere = true;
+    await request(config, '/v1/browser-start', { method: 'POST', body: { sessionId: session.id } });
+    // Persist only after acknowledgement. An offline bridge is retried with the same
+    // non-secret ID on the next alarm; a revived MV3 worker reuses this session record.
+    await chrome.storage.session.set({ [SESSION_KEY]: { id: session.id, notified: true } });
+  }
+  async function poll({ again = false } = {}) {
+    if (polling) { if (again) pollAgain = true; return; }
     polling = true;
     try {
       const config = await readConfig();
       if (!config) return;
+      await notifyBrowserStart(config);
       let owned = await readJob();
       if (owned && Date.now() - core.timestamp(owned.requestedAt) > 900000) { ssoClaims.delete(owned.id); await writeJob(null, owned.id); owned = null; }
       if (owned && !owned.waiting && Date.now() - owned.startedAt > 15000) {
@@ -90,22 +114,28 @@ importScripts('shared.js');
         await reportFailure(config, next, 'BROWSER_ERROR');
       }
     } catch { /* No credentials or remote messages are logged. Popup gives a bounded status. */ }
-    finally { polling = false; }
+    finally {
+      polling = false;
+      if (pollAgain) { pollAgain = false; void poll(); }
+    }
   }
   async function status() {
     const config = await readConfig();
     const owned = await readJob();
-    if (!config) return { paired: false, browser, port: core.DEFAULT_PORT, connected: false, hasOwnedTab: false };
+    if (!config) return { paired: false, browser, startupNotifications: true, port: core.DEFAULT_PORT, connected: false, hasOwnedTab: false };
     try {
       const response = await request(config, '/v1/status');
       const value = response.autoLogin || response;
       // Explicit allowlist: the popup never receives bridgeKey or a website token.
-      return { paired: true, browser, port: config.port, connected: true, hasOwnedTab: Number.isInteger(owned?.tabId),
+      return { paired: true, browser, startupNotifications: true, port: config.port, connected: true, hasOwnedTab: Number.isInteger(owned?.tabId),
         state: typeof value.state === 'string' ? value.state : typeof value.phase === 'string' ? value.phase : 'connected',
+        enabled: typeof value.enabled === 'boolean' ? value.enabled : null,
+        renewIntervalHours: typeof value.renewIntervalHours === 'number' && Number.isFinite(value.renewIntervalHours) && value.renewIntervalHours > 0 ? value.renewIntervalHours : null,
+        nextRenewAt: value.nextRenewAt ?? null,
         expiresAt: value.expiresAt ?? value.credentialExpiresAt ?? null,
         lastRenewedAt: value.lastRenewedAt ?? value.lastSuccessAt ?? null };
     } catch (error) {
-      return { paired: true, browser, port: config.port, connected: false, hasOwnedTab: Number.isInteger(owned?.tabId), code: safeCode(error) };
+      return { paired: true, browser, startupNotifications: true, port: config.port, connected: false, hasOwnedTab: Number.isInteger(owned?.tabId), code: safeCode(error) };
     }
   }
   async function popupMessage(message) {
@@ -197,8 +227,8 @@ importScripts('shared.js');
     })().catch(() => {});
   });
   chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === ALARM) void poll(); });
-  const start = () => { chrome.alarms.create(ALARM, { periodInMinutes: 0.5 }); void poll(); };
-  chrome.runtime.onInstalled.addListener(start);
+  const start = () => { chrome.alarms.create(ALARM, { periodInMinutes: 0.5 }); void poll({ again: true }); };
+  chrome.runtime.onInstalled.addListener(() => { installResetRequested = true; start(); });
   chrome.runtime.onStartup.addListener(start);
   start();
 })();

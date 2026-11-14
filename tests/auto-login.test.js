@@ -13,21 +13,22 @@ const jwt = ({ userId = 1, issued = Math.floor(Date.now() / 1000), expires = iss
     Buffer.from(JSON.stringify({ user_id: userId, iss: 'test-platform', iat: issued, exp: expires })).toString('base64url'),
     Buffer.from('synthetic-signature').toString('base64url')].join('.');
 
-async function fixture({ fetchImpl, environment = {}, oldToken } = {}) {
+async function fixture({ fetchImpl, environment = {}, oldToken, now = Date.now } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'tongji-auto-login-'));
   const credentialFile = join(directory, 'credentials.json'), configFile = join(directory, 'bridge.json');
   const original = oldToken || jwt({ issued: Math.floor(Date.now() / 1000) - 1800 });
   await writePrivateJson(credentialFile, { version: 1, accessToken: original });
   let validations = 0;
-  const manager = createAutoLoginManager({ port: 0, configFile, credentialFile, environment, intervalMs: 1000000,
+  const options = { port: 0, configFile, credentialFile, environment, now, intervalMs: 1000000,
     fetchImpl: fetchImpl || (async (url, options) => {
       validations++;
       assert.equal(url, 'https://agi.tongji.edu.cn/api/v1/auth/me');
       assert.equal(options.method, 'GET'); assert.equal(options.redirect, 'error');
       return new Response(JSON.stringify({ code: 200, data: { id: 1 } }), { status: 200 });
-    }) });
+    }) };
+  let manager = createAutoLoginManager(options);
   await manager.start();
-  const port = (await manager.status()).port;
+  let port = (await manager.status()).port;
   let key = '';
   const request = async (path, body, extra = {}) => {
     const headers = { Origin: `chrome-extension://${id}`, 'X-Tongji-Extension': id,
@@ -54,7 +55,11 @@ async function fixture({ fetchImpl, environment = {}, oldToken } = {}) {
     return setup;
   };
   const cleanup = async () => { await manager.dispose(); await rm(directory, { recursive: true, force: true }); };
-  return { manager, request, pair, cleanup, original, credentialFile, configFile,
+  const restart = async () => {
+    await manager.dispose(); manager = createAutoLoginManager(options); await manager.start();
+    await manager.check(); port = (await manager.status()).port;
+  };
+  return { get manager() { return manager; }, restart, request, pair, cleanup, original, credentialFile, configFile,
     validations: () => validations, key: () => key };
 }
 
@@ -225,5 +230,95 @@ test('clearing credentials does not silently start another login', async () => {
     await f.manager.action('enable'); await f.manager.check();
     assert.equal((await f.request('/v1/command')).data.job, null);
     assert.equal((await f.manager.status()).expiresAt, null);
+  } finally { await f.cleanup(); }
+});
+
+const browserSession = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+test('normal scheduling renews at 12 hours after token issuance, independently of its 24-hour expiration', async () => {
+  const issued = Math.floor(Date.now() / 1000); let clock = issued * 1000;
+  const f = await fixture({ now: () => clock });
+  try {
+    await f.pair(); const initial = (await f.request('/v1/command')).data.job;
+    assert.equal((await f.request('/v1/complete', { jobId: initial.id, accessToken: jwt({ issued }) })).status, 200);
+    assert.equal((await f.manager.status()).renewIntervalHours, 12);
+    assert.equal((await f.manager.status()).nextRenewAt, new Date(clock + 12 * 3600000).toISOString());
+    clock += 12 * 3600000 - 1; await f.manager.check();
+    assert.equal((await f.request('/v1/command')).data.job, null);
+    clock++; await f.manager.check();
+    const renewal = (await f.request('/v1/command')).data.job;
+    assert.equal(renewal.kind, 'renew');
+    assert.notEqual(renewal.id, initial.id);
+    assert.equal((await f.manager.status()).expiresAt, new Date(issued * 1000 + 24 * 3600000).toISOString());
+    await f.manager.check(); assert.equal((await f.request('/v1/command')).data.job.id, renewal.id);
+  } finally { await f.cleanup(); }
+});
+
+test('browser startup refreshes an unexpired token once, coalesces retries and survives a DSH restart', async () => {
+  let clock = Date.now();
+  const f = await fixture({ now: () => clock });
+  try {
+    await f.pair(); const initial = (await f.request('/v1/command')).data.job;
+    await f.request('/v1/failure', { jobId: initial.id, code: 'BROWSER_ERROR' });
+    clock += 5 * 60000;
+    const start = () => f.request('/v1/browser-start', { sessionId: browserSession(1) });
+    const responses = await Promise.all([start(), start(), start()]);
+    assert.ok(responses.every(response => response.status === 200));
+    const renewal = (await f.request('/v1/command')).data.job;
+    assert.equal(renewal.kind, 'renew');
+    assert.equal(JSON.parse(await readFile(f.configFile, 'utf8')).startupRenewPending, true);
+    assert.notEqual(renewal.id, initial.id);
+    await f.restart();
+    const resumed = (await f.request('/v1/command')).data.job;
+    assert.equal(resumed.kind, 'renew', 'acknowledged startup work must resume after a host restart');
+    assert.equal((await start()).status, 200);
+    assert.equal((await f.request('/v1/command')).data.job.id, resumed.id);
+    assert.equal(JSON.parse(await readFile(f.credentialFile, 'utf8')).accessToken, f.original);
+  } finally { await f.cleanup(); }
+});
+
+test('recent success suppresses repeated browser startups for five minutes, but a later session renews', async () => {
+  const issued = Math.floor(Date.now() / 1000); let clock = issued * 1000;
+  const f = await fixture({ now: () => clock });
+  try {
+    await f.pair(); const initial = (await f.request('/v1/command')).data.job;
+    assert.equal((await f.request('/v1/complete', { jobId: initial.id, accessToken: jwt({ issued }) })).status, 200);
+    clock += 5 * 60000 - 1;
+    assert.equal((await f.request('/v1/browser-start', { sessionId: browserSession(2) })).status, 200);
+    assert.equal((await f.request('/v1/command')).data.job, null);
+    assert.equal(JSON.parse(await readFile(f.configFile, 'utf8')).startupRenewPending, false);
+    clock += 2;
+    await f.request('/v1/browser-start', { sessionId: browserSession(2) });
+    assert.equal((await f.request('/v1/command')).data.job, null, 'the same session is not retried when the cooldown ends');
+    await f.request('/v1/browser-start', { sessionId: browserSession(3) });
+    assert.equal((await f.request('/v1/command')).data.job.kind, 'renew');
+  } finally { await f.cleanup(); }
+});
+
+test('browser startup respects disabled login and credential removal; invalid notifications are rejected', async () => {
+  const f = await fixture();
+  try {
+    assert.equal((await f.request('/v1/browser-start', { sessionId: browserSession(4) })).status, 403);
+    await f.pair(); await f.manager.action('disable');
+    assert.equal((await f.request('/v1/browser-start', { sessionId: 'invalid' })).status, 400);
+    await f.request('/v1/browser-start', { sessionId: browserSession(5) });
+    assert.equal((await f.request('/v1/command')).data.job, null);
+    await unlink(f.credentialFile); await f.manager.action('enable');
+    await f.request('/v1/browser-start', { sessionId: browserSession(6) });
+    assert.equal((await f.request('/v1/command')).data.job, null);
+    assert.equal(JSON.parse(await readFile(f.configFile, 'utf8')).startupRenewPending, false);
+  } finally { await f.cleanup(); }
+});
+
+test('a failed scheduled login waits 30 minutes before another automatic attempt', async () => {
+  let clock = Date.now(); const issued = Math.floor(clock / 1000) - 13 * 3600;
+  const f = await fixture({ now: () => clock, oldToken: jwt({ issued }) });
+  try {
+    await f.pair(); const initial = (await f.request('/v1/command')).data.job;
+    await f.request('/v1/failure', { jobId: initial.id, code: 'BROWSER_ERROR' });
+    clock += 30 * 60000 - 1; await f.manager.check();
+    assert.equal((await f.request('/v1/command')).data.job, null);
+    clock++; await f.manager.check();
+    assert.equal((await f.request('/v1/command')).data.job.kind, 'renew');
   } finally { await f.cleanup(); }
 });

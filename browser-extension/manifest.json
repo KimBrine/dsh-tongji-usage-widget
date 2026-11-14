@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "同济 AI 登录助手",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "在 Edge / Chrome 中，按同济 AI 积分浮窗请求，通过正常学校登录流程更新本机凭据。",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "alarms"],
