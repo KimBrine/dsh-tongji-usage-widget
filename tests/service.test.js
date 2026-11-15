@@ -23,7 +23,7 @@ test('update checks do not block campus queries or require a login; manual check
   const noLogin = createUsageService({ updateChecker: { ...checker, check: async () => available }, credentialStatus: async () => ({ configured: false }) });
   assert.equal((await noLogin.status()).updates.state, 'available'); noLogin.dispose();
 });
-test('shared requests, cache TTL and force cooldown avoid duplicate polling', async () => {
+test('shared requests use a 30-second cache and manual refresh has a 3-second cooldown', async () => {
   let count = 0, clock = 1000;
   let release;
   const service = createUsageService({ credentialStatus: configured, now: () => clock,
@@ -31,13 +31,71 @@ test('shared requests, cache TTL and force cooldown avoid duplicate polling', as
   const a = service.status(), b = service.status();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(count, 1); release();
-  assert.deepEqual(await a, await b);
+  const first = await a;
+  assert.deepEqual(first, await b);
+  assert.equal(first.refreshInterval, 30);
   await service.status({ force: true });
   assert.equal(count, 1);
-  clock += 60001;
+  clock += 29999;
+  await service.status();
+  assert.equal(count, 1);
+  clock++;
   const c = service.status();
   await new Promise(resolve => setImmediate(resolve)); release(); await c;
   assert.equal(count, 2);
+  clock += 2999;
+  await service.status({ force: true });
+  assert.equal(count, 2);
+  clock++;
+  const d = service.status({ force: true });
+  await new Promise(resolve => setImmediate(resolve)); release(); await d;
+  assert.equal(count, 3);
+  service.dispose();
+});
+
+test('valid automatic and manual quota queries only read the existing login and never schedule renewal', async () => {
+  let clock = 0, queries = 0, checks = 0, renewals = 0, revisions = 0;
+  const service = createUsageService({ credentialStatus: configured, now: () => clock,
+    credentialRevision: async () => { revisions++; return 'unchanged-saved-credential'; },
+    autoLogin: { check: async () => { checks++; }, requestRenew: async () => { renewals++; },
+      status: async () => ({ state: 'idle', connected: true, enabled: true }) },
+    query: async () => { queries++; return { points: { planRemaining: 10 } }; } });
+  assert.equal((await service.status()).report.points.planRemaining, 10);
+  clock += 30000;
+  assert.equal((await service.status()).report.points.planRemaining, 10);
+  clock += 3000;
+  assert.equal((await service.status({ force: true })).report.points.planRemaining, 10);
+  assert.equal(queries, 3);
+  assert.ok(revisions >= 3);
+  assert.equal(checks, 0);
+  assert.equal(renewals, 0);
+  service.dispose();
+});
+
+test('network failure during quota refresh does not reset the login state', async () => {
+  let checks = 0, renewals = 0;
+  const service = createUsageService({ credentialStatus: configured,
+    autoLogin: { check: async () => { checks++; }, requestRenew: async () => { renewals++; }, status: async () => ({ state: 'idle' }) },
+    query: async () => { throw Object.assign(new Error('secret'), { code: 'NETWORK' }); } });
+  assert.equal((await service.status({ force: true })).error.code, 'NETWORK');
+  assert.equal(checks, 0); assert.equal(renewals, 0);
+  service.dispose();
+});
+
+test('concurrent rejected quota queries request one login recovery and reuse the authentication error cache', async () => {
+  let queries = 0, renewals = 0, release;
+  const service = createUsageService({ credentialStatus: configured, now: () => 1000,
+    autoLogin: { check: async () => { throw new Error('quota refresh must not run the login scheduler'); },
+      status: async () => ({ state: 'opening' }), requestRenew: async () => { renewals++; } },
+    query: async () => { queries++; await new Promise(resolve => { release = resolve; }); throw Object.assign(new Error('secret'), { code: 'AUTH_EXPIRED' }); } });
+  const first = service.status({ force: true });
+  const second = service.status({ force: true });
+  await new Promise(resolve => setImmediate(resolve)); release();
+  assert.equal((await first).error.code, 'AUTH_EXPIRED');
+  assert.equal((await second).error.code, 'AUTH_EXPIRED');
+  assert.equal((await service.status({ force: true })).error.code, 'AUTH_EXPIRED');
+  assert.equal(queries, 1); assert.equal(renewals, 1);
+  service.dispose();
 });
 test('network error keeps old report, auth error clears it and messages are redacted', async () => {
   let mode = 'ok', clock = 0;
@@ -109,4 +167,26 @@ test('expired login requests automatic renewal and new credentials bypass the ol
   const renewed = await service.status();
   assert.equal(renewed.error, null); assert.equal(renewed.report.points.planRemaining, 15);
   assert.equal(renewed.autoLogin.state, 'success'); service.dispose();
+});
+
+test('explicit installs coalesce release resolution, do not query credits and expose restart state', async () => {
+  let resolved = 0, installed = 0, releaseFetch;
+  let installerState = { state: 'idle', canInstall: true };
+  const service = createUsageService({ credentialStatus: async () => { throw new Error('must not read campus credentials'); },
+    updateChecker: { status: () => ({ currentVersion: '0.2.4', latestVersion: '0.3.0' }) },
+    updateInstaller: { probe: async () => {}, status: () => installerState, install: async release => {
+      assert.equal(release.version, '0.3.0'); installed++; installerState = { state: 'installed', canInstall: false, restartRequired: true }; } },
+    releaseResolver: async () => { resolved++; await new Promise(resolve => { releaseFetch = resolve; }); return { version: '0.3.0' }; } });
+  const first = service.installUpdate(), second = service.installUpdate();
+  assert.equal(first, second);
+  await new Promise(resolve => setImmediate(resolve)); releaseFetch();
+  const result = await first;
+  assert.equal(resolved, 1); assert.equal(installed, 1); assert.equal(result.updates.installer.restartRequired, true);
+  service.dispose(); await assert.rejects(service.installUpdate());
+});
+
+test('unsupported installation returns download guidance without contacting GitHub or changing files', async () => {
+  const service = createUsageService({ updateInstaller: { probe: async () => {}, status: () => ({ state: 'unsupported', canInstall: false }) },
+    releaseResolver: async () => { throw new Error('must not resolve'); } });
+  assert.equal((await service.installUpdate()).updates.installer.state, 'unsupported'); service.dispose();
 });

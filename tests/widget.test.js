@@ -122,6 +122,73 @@ test('account source uses the account label and dispose removes DOM, timers, and
   environment.assertClean();
 });
 
+test('quota refresh defaults to thirty seconds and automatic polling keeps using the existing login', async () => {
+  const environment = createEnvironment();
+  const { dispose, calls } = mountWithQueue(environment, [successfulSnapshot(), successfulSnapshot({ points: { source: 'account', planRemaining: 120 } })]);
+  await settle();
+  assert.match(environment.element('status').textContent, /30秒刷新/);
+  assert.equal(environment.element('refresh-quota').textContent, '刷新额度');
+  assert.equal([...environment.timers.values()][0].delay, 30000);
+  [...environment.timers.values()][0].callback();
+  await settle();
+  assert.equal(environment.element('balance').textContent, '120');
+  assert.deepEqual(calls, [
+    { action: 'status', payload: { range: 'today', force: false } },
+    { action: 'status', payload: { range: 'today', force: false } },
+  ]);
+  assert.equal([...environment.timers.values()][0].delay, 30000);
+  dispose(); environment.assertClean();
+});
+
+test('visible quota refresh button forces one query, coalesces clicks and never requests a login update', async () => {
+  const environment = createEnvironment();
+  const calls = []; let finish;
+  const dispose = mountWidget({ document: environment.document, storage: null, call: async (action, payload) => {
+    calls.push({ action, payload });
+    if (calls.length === 1) return successfulSnapshot();
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  await settle();
+  environment.element('refresh-quota').dispatch('click');
+  environment.element('refresh-quota').dispatch('click');
+  environment.element('refresh').dispatch('click');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1], { action: 'status', payload: { range: 'today', force: true } });
+  assert.equal(environment.element('refresh-quota').textContent, '刷新中…');
+  assert.equal(environment.element('refresh-quota').disabled, true);
+  assert.equal(environment.element('refresh').disabled, true);
+  assert.equal(environment.element('refresh-quota').attributes['aria-busy'], 'true');
+  finish(successfulSnapshot({ points: { source: 'account', planRemaining: 456 } }));
+  await settle();
+  assert.equal(environment.element('balance').textContent, '456');
+  assert.equal(environment.element('refresh-quota').textContent, '刷新额度');
+  assert.equal(environment.element('refresh-quota').disabled, false);
+  assert.equal(environment.timers.size, 1);
+  assert.equal([...environment.timers.values()][0].delay, 30000);
+  assert.ok(calls.every(({ action }) => action === 'status'));
+  dispose(); environment.assertClean();
+});
+
+test('manual quota refresh preserves the selected range while refreshing today for the budget', async () => {
+  const environment = createEnvironment();
+  const sevenDays = cost => successfulSnapshot({ usage: { range: '7d', pointsCost: cost, totalTokens: 30, calls: 2 } });
+  const { dispose, calls } = mountWithQueue(environment, [successfulSnapshot(), successfulSnapshot(), sevenDays(10),
+    successfulSnapshot({ usage: { range: 'today', pointsCost: 4, totalTokens: 20, calls: 1 } }), sevenDays(12)]);
+  await settle();
+  environment.element('range').value = '7d'; environment.element('range').dispatch('change');
+  await settle();
+  environment.element('refresh-quota').dispatch('click');
+  await settle();
+  assert.equal(environment.element('range').value, '7d');
+  assert.equal(environment.element('range-cost').textContent, '12');
+  assert.equal(environment.element('today-cost').textContent, '4');
+  assert.deepEqual(calls.slice(-2), [
+    { action: 'status', payload: { range: 'today', force: true } },
+    { action: 'status', payload: { range: '7d', force: true } },
+  ]);
+  dispose(); environment.assertClean();
+});
+
 for (const code of ['AUTH_MISSING', 'AUTH_EXPIRED', 'INVALID_CREDENTIALS']) {
   test(`${code} clears formerly successful balance and daily statistics`, async () => {
     const environment = createEnvironment();
@@ -271,7 +338,7 @@ test('offline Chrome assistant guidance does not tell the user to copy a website
   await settle();
   assert.match(environment.element('notice').textContent, /助手离线，请打开 Chrome/);
   assert.ok(!environment.element('setup-message').textContent.includes('access_token'));
-  assert.equal([...environment.timers.values()][0].delay, 60000);
+  assert.equal([...environment.timers.values()][0].delay, 30000);
   dispose();
   environment.assertClean();
 });
@@ -392,7 +459,7 @@ test('renewal updates login metadata first and only a normal status response rep
   await settle();
   assert.equal(environment.element('balance').textContent, '456');
   assert.equal(environment.element('auto-state').textContent, '登录已自动更新。');
-  assert.equal([...environment.timers.values()][0].delay, 60000);
+  assert.equal([...environment.timers.values()][0].delay, 30000);
   dispose();
   environment.assertClean();
 });
@@ -457,8 +524,8 @@ test('a new version has its own card and capsule markers alongside the low balan
   assert.equal(environment.element('pill-alert').hidden, false);
   assert.match(environment.element('pill').attributes['aria-label'], /剩余积分低于 100.*发现新版本 v0.3.0/);
   assert.match(environment.element('pill').title, /发现新版本 v0.3.0/);
-  assert.equal(environment.element('update-link').attributes.href, 'https://github.com/KimBrine/dsh-tongji-usage-widget');
-  assert.equal(environment.element('update-help').attributes.href, 'https://github.com/KimBrine/dsh-tongji-usage-widget#readme');
+  assert.equal(environment.element('update-link').attributes.href, 'https://github.com/KimBrine/dsh-tongji-usage-widget/releases/latest');
+  assert.equal(environment.element('update-help').attributes.href, 'https://github.com/KimBrine/dsh-tongji-usage-widget/releases/latest');
   for (const id of ['update-link', 'update-help']) {
     assert.equal(environment.element(id).attributes.target, '_blank');
     assert.match(environment.element(id).attributes.rel, /noopener/);
@@ -499,7 +566,7 @@ test('manual update checking coalesces clicks and only changes version metadata'
   assert.equal(environment.element('check-update').disabled, false);
   assert.equal(environment.element('update-notice').hidden, false);
   assert.equal(environment.timers.size, 1);
-  assert.equal([...environment.timers.values()][0].delay, 60000);
+  assert.equal([...environment.timers.values()][0].delay, 30000);
   dispose();
   environment.assertClean();
 });
@@ -586,4 +653,237 @@ test('disposing during update checking prevents late results from restoring DOM 
   completeCheck({ updates: updateState({ state: 'available', latestVersion: '0.3.0' }) });
   await settle();
   environment.assertClean();
+});
+
+const installState = (overrides = {}) => ({ state: 'idle', canInstall: true, message: '', ...overrides });
+const installSnapshot = (installer, overrides = {}) => ({
+  updates: updateState({ state: 'available', latestVersion: '0.3.0', installer, ...overrides }),
+});
+
+test('card and settings install buttons coalesce one payload-free request and require a restart after success', async () => {
+  const environment = createEnvironment();
+  const calls = [];
+  let completeInstall;
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async (action, payload) => {
+      calls.push({ action, payload });
+      if (action === 'status') return { ...autoSnapshot(autoLoginState()), ...installSnapshot(installState()) };
+      return new Promise(resolve => { completeInstall = resolve; });
+    },
+  });
+  await settle();
+  assert.equal(environment.element('install-update-notice').hidden, false);
+  assert.equal(environment.element('install-update').hidden, false);
+  environment.element('install-update-notice').dispatch('click');
+  environment.element('install-update').dispatch('click');
+  environment.element('check-update').dispatch('click');
+  assert.deepEqual(calls.map(({ action }) => action), ['status', 'install-update']);
+  assert.equal(calls[1].payload, undefined);
+  assert.equal(environment.element('install-update').disabled, true);
+  assert.equal(environment.element('install-update-notice').attributes['aria-busy'], 'true');
+  assert.equal(environment.element('check-update').disabled, true);
+  assert.match(environment.element('update-status').textContent, /正在下载并安装/);
+  assert.equal([...environment.timers.values()][0].delay, 5000);
+  completeInstall({ ...installSnapshot(installState({ state: 'installed', version: '0.3.0', restartRequired: true })),
+    report: { points: { planRemaining: 999 } }, autoLogin: autoLoginState({ state: 'disabled', enabled: false }) });
+  await settle();
+  assert.equal(environment.element('balance').textContent, '123');
+  assert.equal(environment.element('auto-toggle').textContent, '停用自动更新');
+  assert.match(environment.element('install-status').textContent, /完全退出并重新打开 DSH.*助手.*重新加载/);
+  assert.equal(environment.element('install-update').disabled, true);
+  assert.equal(environment.element('install-update-notice').textContent, '已安装，重启 DSH 生效');
+  assert.equal(environment.element('pill-update').textContent, '重启');
+  assert.equal([...environment.timers.values()][0].delay, 30000);
+  environment.element('install-update').dispatch('click');
+  assert.equal(calls.filter(({ action }) => action === 'install-update').length, 1);
+  dispose();
+  environment.assertClean();
+});
+
+test('an older in-flight balance response cannot revert a completed installation to idle', async () => {
+  const environment = createEnvironment();
+  let statusCalls = 0, completeStatus, completeInstall;
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async action => {
+      if (action === 'install-update') return new Promise(resolve => { completeInstall = resolve; });
+      if (++statusCalls === 1) return { ...successfulSnapshot(), ...installSnapshot(installState()) };
+      return new Promise(resolve => { completeStatus = resolve; });
+    },
+  });
+  await settle();
+  environment.element('refresh').dispatch('click');
+  environment.element('install-update').dispatch('click');
+  await settle();
+  completeInstall(installSnapshot(installState({ state: 'installed', version: '0.3.0', restartRequired: true })));
+  await settle();
+  completeStatus({ ...successfulSnapshot(), ...installSnapshot(installState()) });
+  await settle();
+  assert.equal(environment.element('update-status').textContent, '新版已安装，重启 DSH 生效');
+  assert.equal(environment.element('install-update').disabled, true);
+  assert.equal(environment.element('pill-update').textContent, '重启');
+  dispose();
+  environment.assertClean();
+});
+
+test('background installation progress uses fast status polling and accepts completion without a new version-check timestamp', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [
+    { ...successfulSnapshot(), ...installSnapshot(installState()) },
+    installSnapshot(installState({ state: 'installing', message: '正在校验下载。' })),
+    { ...successfulSnapshot(), ...installSnapshot(installState()) },
+    { ...successfulSnapshot(), ...installSnapshot(installState({ state: 'installed', version: '0.3.0', restartRequired: true })) },
+  ]);
+  await settle();
+  environment.element('install-update').dispatch('click');
+  await settle();
+  assert.equal([...environment.timers.values()][0].delay, 5000);
+  assert.equal(environment.element('install-update').disabled, true);
+  environment.element('refresh').dispatch('click');
+  await settle();
+  assert.match(environment.element('update-status').textContent, /正在下载并安装/);
+  environment.element('refresh').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-status').textContent, '新版已安装，重启 DSH 生效');
+  assert.equal([...environment.timers.values()][0].delay, 30000);
+  dispose();
+  environment.assertClean();
+});
+
+test('an installer refusal explains manual Release downloads without issuing an install request', async () => {
+  for (const installer of [installState({ state: 'unsupported', message: '当前安装位置不可写。' }), installState({ canInstall: false, message: '新版尚未发布安装包。' })]) {
+    const environment = createEnvironment();
+    const { dispose, calls } = mountWithQueue(environment, [{ ...successfulSnapshot(), ...installSnapshot(installer) }]);
+    await settle();
+    assert.equal(environment.element('install-update').hidden, true);
+    assert.equal(environment.element('install-update-notice').hidden, true);
+    assert.equal(environment.element('install-status').textContent, installer.message);
+    assert.match(environment.element('install-help').textContent, /手动下载.*GitHub Release/);
+    assert.equal(environment.element('update-help').attributes.href, 'https://github.com/KimBrine/dsh-tongji-usage-widget/releases/latest');
+    environment.element('install-update').dispatch('click');
+    assert.deepEqual(calls.map(({ action }) => action), ['status']);
+    dispose();
+    environment.assertClean();
+  }
+});
+
+test('backend installation failure preserves credit data and allows an explicit retry', async () => {
+  const environment = createEnvironment();
+  const message = '下载校验失败，未替换插件。<img src=x>';
+  const { dispose, calls } = mountWithQueue(environment, [
+    { ...successfulSnapshot(), ...installSnapshot(installState()) },
+    installSnapshot(installState({ state: 'error', message })),
+    installSnapshot(installState({ state: 'installed', version: '0.3.0' })),
+  ]);
+  await settle();
+  environment.element('install-update').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-status').textContent, '安装更新失败');
+  assert.equal(environment.element('update-error').textContent, message);
+  assert.equal(environment.element('install-update').disabled, false);
+  assert.equal(environment.element('balance').textContent, '123');
+  environment.element('install-update-notice').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-status').textContent, '新版已安装，重启 DSH 生效');
+  assert.equal(environment.element('update-error').hidden, true);
+  assert.deepEqual(calls.map(({ action }) => action), ['status', 'install-update', 'install-update']);
+  dispose();
+  environment.assertClean();
+});
+
+test('a failed transport install request stays visible after normal polling and does not claim installation', async () => {
+  const environment = createEnvironment();
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async action => {
+      if (action === 'status') return { ...successfulSnapshot(), ...installSnapshot(installState()) };
+      throw new Error('network SECRET');
+    },
+  });
+  await settle();
+  environment.element('install-update').dispatch('click');
+  await settle();
+  environment.element('refresh').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-status').textContent, '安装更新失败');
+  assert.match(environment.element('update-error').textContent, /暂时无法安装更新/);
+  assert.ok(!environment.element('update-error').textContent.includes('SECRET'));
+  assert.equal(environment.element('install-update').disabled, false);
+  dispose();
+  environment.assertClean();
+});
+
+test('disposing during installation discards late installer results and clears progress timers', async () => {
+  const environment = createEnvironment();
+  let completeInstall;
+  const dispose = mountWidget({
+    document: environment.document, storage: null,
+    call: async action => action === 'status' ? { ...successfulSnapshot(), ...installSnapshot(installState()) }
+      : new Promise(resolve => { completeInstall = resolve; }),
+  });
+  await settle();
+  environment.element('install-update').dispatch('click');
+  await settle();
+  dispose();
+  completeInstall(installSnapshot(installState({ state: 'installed', version: '0.3.0' })));
+  await settle();
+  environment.assertClean();
+});
+
+test('an install action with nothing newer to install accepts idle status and explains the result', async () => {
+  const environment = createEnvironment();
+  const message = '本机文件已是该发布版本或更新，无需重复安装。';
+  const { dispose } = mountWithQueue(environment, [
+    { ...successfulSnapshot(), ...installSnapshot(installState()) },
+    installSnapshot(installState({ message, version: '0.3.0' })),
+  ]);
+  await settle();
+  environment.element('install-update').dispatch('click');
+  await settle();
+  assert.equal(environment.element('install-status').textContent, message);
+  assert.equal(environment.element('update-error').hidden, true);
+  assert.equal(environment.element('install-update').disabled, false);
+  assert.ok(!environment.element('update-status').textContent.includes('失败'));
+  dispose();
+  environment.assertClean();
+});
+
+test('a failed installation that may have changed files preserves restart and recovery guidance', async () => {
+  const environment = createEnvironment();
+  const { dispose } = mountWithQueue(environment, [
+    { ...successfulSnapshot(), ...installSnapshot(installState()) },
+    installSnapshot(installState({ state: 'error', message: '安装未完成。', restartRequired: true })),
+  ]);
+  await settle();
+  environment.element('install-update').dispatch('click');
+  await settle();
+  assert.equal(environment.element('update-status').textContent, '安装更新失败');
+  for (const id of ['install-status', 'install-notice-status']) assert.match(environment.element(id).textContent, /安装未完成.*本机文件可能已经变化.*重新打开 DSH 后核对版本.*手动下载/);
+  assert.equal(environment.element('update-error').textContent, '安装未完成。');
+  dispose();
+  environment.assertClean();
+});
+
+test('only allowlisted release lookup errors expose the backend user message', async () => {
+  for (const code of ['NO_RELEASE', 'INVALID_RELEASE', 'RELEASE_NETWORK', 'UNKNOWN']) {
+    const environment = createEnvironment();
+    const message = code === 'UNKNOWN' ? 'SECRET arbitrary backend text' : '正式发行版尚未准备好，请稍后检查 Release。';
+    const dispose = mountWidget({
+      document: environment.document, storage: null,
+      call: async action => {
+        if (action === 'status') return { ...successfulSnapshot(), ...installSnapshot(installState()) };
+        throw Object.assign(new Error(message), { code });
+      },
+    });
+    await settle();
+    environment.element('install-update').dispatch('click');
+    await settle();
+    if (code === 'UNKNOWN') {
+      assert.match(environment.element('update-error').textContent, /暂时无法安装更新/);
+      assert.ok(!environment.element('update-error').textContent.includes('SECRET'));
+    } else assert.equal(environment.element('update-error').textContent, message);
+    dispose();
+    environment.assertClean();
+  }
 });

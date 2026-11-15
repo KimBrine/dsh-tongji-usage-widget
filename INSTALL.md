@@ -4,6 +4,8 @@
 
 本说明适用于本仓库的 DSH 插件和浏览器登录助手；原 Qoder 插件是独立项目，未包含在本仓库中。
 
+0.3.0 起也可从 [GitHub Release](https://github.com/KimBrine/dsh-tongji-usage-widget/releases/latest) 下载完整 ZIP，解压后的 `dsh-tongji-usage-widget` 文件夹就是插件根目录。首次安装仍按下面的本地 `link:` 方式操作。Git 克隆安装可在浮窗发现新版后点击“下载并安装更新”；解压安装提供“手动下载”。更新完成后重启 DSH，浏览器助手代码更新后在扩展管理页重新加载，无需重新配对。
+
 ## 官方 DSH 桌面客户端
 
 桌面客户端读取 `desktop` profile。当前本机 DSH `0.1.7-rc.2` 的官方 CLI 明确拒绝管理该 profile，应通过桌面会话内置的 `plugin_manager` 安装。

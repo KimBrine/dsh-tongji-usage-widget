@@ -93,3 +93,28 @@ test('manual update checks require operator access and return version data witho
   } finally { cleanup(); await new Promise(resolve => server.close(resolve)); }
   assert.equal(routes.size, 0);
 });
+
+test('plugin installation requires explicit guarded empty POST and never accepts arbitrary targets', async () => {
+  const routes = new Map(); let deny = true, installs = 0;
+  const ctx = { webServer: { register(route) { routes.set(route.path, route); return () => routes.delete(route.path); } },
+    connection: { requestRejection() { return deny ? 401 : undefined; } } };
+  const cleanup = registerRoutes(ctx, { dispose() {}, installUpdate: async () => { installs++; return { updates: { installer: { state: 'installed', restartRequired: true } } }; } });
+  const server = createServer((req, res) => routes.get(new URL(req.url, 'http://local').pathname)?.handler(req, res));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}${BASE_PATH}/install-update`;
+  const headers = { 'X-Tongji-Widget': '1', 'Content-Type': 'application/json' };
+  const post = (body = '{}', extra = {}) => fetch(url, { method: 'POST', headers: { ...headers, ...extra }, body });
+  try {
+    assert.equal((await post()).status, 403); assert.equal(installs, 0);
+    deny = false;
+    assert.equal((await fetch(url, { headers })).status, 405);
+    assert.equal((await post('{}', { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+    for (const body of ['null', '[]', '{"url":"https://untrusted.example"}', '{"path":"C:/"}', 'x'.repeat(129)]) {
+      assert.equal((await post(body)).status, 400);
+    }
+    assert.equal((await post('{}', { 'Content-Type': 'text/plain' })).status, 400);
+    assert.equal(installs, 0);
+    const response = await post(); assert.equal(response.status, 200);
+    assert.equal((await response.json()).updates.installer.state, 'installed'); assert.equal(installs, 1);
+  } finally { cleanup(); await new Promise(resolve => server.close(resolve)); }
+});

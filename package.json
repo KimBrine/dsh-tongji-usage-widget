@@ -1,11 +1,11 @@
 {
   "name": "dsh-tongji-usage-widget",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "同济 AI 平台积分监控浮窗，适配 DeepSeek Harness Web 与官方桌面端",
   "type": "module",
   "main": "lib/index.js",
   "engines": { "node": ">=20" },
-  "files": ["lib/", "scripts/", "browser-extension/", "tests/", "cordis.patch.yml", "README.md", "INSTALL.md", "VALIDATION.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "files": ["lib/", "scripts/", "browser-extension/", "tests/", "cordis.patch.yml", "README.md", "INSTALL.md", "VALIDATION.md", "RELEASING.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "scripts": {
     "test": "node --test tests/*.test.js",
